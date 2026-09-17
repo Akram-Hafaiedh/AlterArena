@@ -1,3 +1,22 @@
+-- =========================================================================
+-- AlterArena data model
+-- =========================================================================
+-- Three data sources, in priority order:
+--   1. Live Blizzard API (GetPersonalRatedInfo, C_CurrencyInfo, etc.)
+--      Authoritative for the logged-in character.
+--   2. AlterArenaDB.players[key].matches
+--      Match records captured by MatchTracker. Authoritative for alts.
+--   3. AlterArenaDB.players[key].bracketRatings / .specStats
+--      Derived cache. Rebuilt from (1) and (2) on every load.
+--
+-- Rules:
+--   - The addon NEVER reads from another addon's SavedVariables.
+--   - The cache is disposable. Deleting it is always safe.
+--   - .matches is the only append-only table. It is never rewritten by
+--     migration code.
+-- =========================================================================
+
+
 local ADDON_NAME, ns = ...
 
 -- AlterArenaDB layout:
@@ -509,107 +528,6 @@ function ns.UpdateAllCharacterRatings()
             end
         end
     end
-
-    -- Optional non-intrusive scan of PVPHUB_DB for multi-spec history.
--- SAFETY: exact "Name-Realm" key only. No fuzzy/name-only fallback search -
--- that's how data from a different character could get attributed here.
-if _G["PVPHUB_DB"] and type(_G["PVPHUB_DB"]) == "table" then
-    local pKey = ns.GetPlayerKey()
-    local hubChar = _G["PVPHUB_DB"][pKey]
-
-    if hubChar and hubChar.realm and hubChar.realm ~= GetRealmName() then
-        hubChar = nil
-    end
-    if hubChar and hubChar.name and hubChar.name ~= UnitName("player") then
-        hubChar = nil
-    end
-
-    if hubChar and hubChar.bracketStats and hubChar.bracketStats.ratingShuffle then
-        for specID, stats in pairs(hubChar.bracketStats.ratingShuffle) do
-            local sName, _, sIcon = nil, nil, nil
-            if GetSpecializationInfoByID then
-                local _, n, _, ic = GetSpecializationInfoByID(specID)
-                sName = n
-                sIcon = ic
-            end
-
-            if sName and stats.played and stats.played > 0 then
-                local sMMR = nil
-                if hubChar.lastKnownMMR and hubChar.lastKnownMMR.ratingShuffle and hubChar.lastKnownMMR.ratingShuffle[specID] then
-                    sMMR = hubChar.lastKnownMMR.ratingShuffle[specID].mmr
-                end
-
-                rec.specStats[sName] = rec.specStats[sName] or {}
-                local sObj = rec.specStats[sName]
-
-                -- Never let an import overwrite a spec we've already confirmed
-                -- ourselves (live API read or our own match history).
-                if sObj.source == "pvphub" or not sObj.rating or sObj.rating <= 0 then
-                    sObj.name = sName
-                    sObj.icon = sIcon or sObj.icon
-                    sObj.rating = stats.rating or sObj.rating or 0
-                    sObj.roundsWon = stats.won or sObj.roundsWon or 0
-                    sObj.roundsPlayed = stats.played or sObj.roundsPlayed or 0
-                    sObj.roundsLost = stats.lost or (sObj.roundsPlayed - sObj.roundsWon)
-                    sObj.winRate = (sObj.roundsPlayed > 0) and (math.floor((sObj.roundsWon / sObj.roundsPlayed) * 1000 + 0.5) / 10) or 0
-                    sObj.mmr = sMMR or sObj.mmr
-                    sObj.source = "pvphub"
-                end
-            end
-        end
-    end
-end
-end
-
-
--- Removes any bracket/spec rating seeded from an external addon's data
--- (source == "pvphub") that isn't corroborated by this character's own
--- recorded matches.
-function ns.CleanPhantomRatings()
-    if not AlterArenaDB or not AlterArenaDB.players then return 0, 0 end
-
-    local removedCount, charCount = 0, 0
-
-    for key, rec in pairs(AlterArenaDB.players) do
-        local removedHere = 0
-
-        local function HasCorroboratingMatch(bracketOrSpecName)
-            if not rec.matches then return false end
-            for _, m in ipairs(rec.matches) do
-                if m and m.ratingAfter and m.ratingAfter > 0 then
-                    if m.bracket == bracketOrSpecName or m.spec == bracketOrSpecName then
-                        return true
-                    end
-                end
-            end
-            return false
-        end
-
-        if rec.bracketRatings then
-            for bName, bData in pairs(rec.bracketRatings) do
-                if type(bData) == "table" and bData.source == "pvphub" and not HasCorroboratingMatch(bName) then
-                    rec.bracketRatings[bName] = nil
-                    removedHere = removedHere + 1
-                end
-            end
-        end
-
-        if rec.specStats then
-            for sName, sData in pairs(rec.specStats) do
-                if type(sData) == "table" and sData.source == "pvphub" and not HasCorroboratingMatch(sName) then
-                    rec.specStats[sName] = nil
-                    removedHere = removedHere + 1
-                end
-            end
-        end
-
-        if removedHere > 0 then
-            charCount = charCount + 1
-            removedCount = removedCount + removedHere
-        end
-    end
-
-    return removedCount, charCount
 end
 
 local eventFrame = CreateFrame("Frame")
@@ -640,7 +558,6 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         if (AlterArenaDB.schemaVersion or 1) < 2 then
             local cleared = ns.MigrateRatings()
             AlterArenaDB.schemaVersion = 2
-            AlterArenaDB.cleanedPhantomRatingsV1 = true  -- keep old flag so older builds don't re-run
             print(string.format("|cff40c0ffAlterArena|r: Rating cache rebuilt (cleared %d record(s)). Rebuilding from live API and match history…", cleared))
         end
 
@@ -714,14 +631,6 @@ SlashCmdList["ALTERARENA"] = function(msg)
         ns.SanitizeAllPlayerRecords()
         if ns.RefreshUI then ns.RefreshUI() end
         print("|cff40c0ffAlterArena|r: Rating cache wiped and rebuilt from live API + match history.")
-    elseif msg == "clean" then
-        local removed, chars = ns.CleanPhantomRatings and ns.CleanPhantomRatings()
-        if removed and removed > 0 then
-            print(string.format("|cff40c0ffAlterArena|r: Removed %d unverified rating(s) across %d character(s).", removed, chars))
-        else
-            print("|cff40c0ffAlterArena|r: Nothing to clean.")
-        end
-        if ns.RefreshUI then ns.RefreshUI() end
     else
         if ns.ToggleUI then
             ns.ToggleUI()
