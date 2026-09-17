@@ -213,11 +213,12 @@ function RequestBattlefieldScoreData()
 end
 
 function GetPersonalRatedInfo(idx)
-    -- idx 1: 2v2, idx 2: 3v3, idx 7: Solo Shuffle, idx 9: Blitz
+    -- idx 1: 2v2, idx 2: 3v3, idx 4: 10v10 RBG, idx 7: Solo Shuffle, idx 9: Blitz
     if idx == 1 then return 1750, 0, 0, 10, 6, 0, 0, 0, 0, 0, 0, 0, 0 end
     if idx == 2 then return 1820, 0, 0, 20, 12, 0, 0, 0, 0, 0, 0, 0, 0 end
-    if idx == 7 or idx == 4 then return 1950, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 30, 18 end
-    if idx == 9 or idx == 8 then return 1600, 0, 0, 8, 5, 0, 0, 0, 0, 0, 0, 0, 0 end
+    if idx == 4 then return 1500, 0, 0, 15, 8, 0, 0, 0, 0, 0, 0, 0, 0 end -- 10v10 RBG! Must NEVER pollute Shuffle or Blitz
+    if idx == 7 then return 1950, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 30, 18 end -- Solo Shuffle
+    if idx == 9 or idx == 8 then return 1600, 0, 0, 8, 5, 0, 0, 0, 0, 0, 0, 0, 0 end -- Blitz
     return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 end
 
@@ -508,6 +509,77 @@ runLua(`
         mf.settingsPanel.toggleDebugBtn:GetScript("OnClick")(mf.settingsPanel.toggleDebugBtn)
     end
 `, 'Tested Cogwheel Settings button and Settings Debug Mode toggle');
+
+runLua(`
+    -- 9. Rating Accuracy & Spec Isolation Verification
+    local pKey = ns.GetPlayerKey()
+    local rec = AlterArenaDB.players[pKey]
+    assert(rec, "Player record must exist in AlterArenaDB")
+
+    -- Check that Shuffle rating is 1950 (from idx 7) and NOT contaminated by 10v10 RBG (1500 from idx 4)
+    local sData = ns.GetCharacterBracketData(rec, "Shuffle", "Destruction")
+    assert(sData, "Shuffle data for Destruction must exist")
+    assert(sData.current == 1950, "Shuffle rating must be 1950 (was: " .. tostring(sData.current) .. ")")
+
+    -- Check that Blitz rating is 1600 (from idx 9) and NOT contaminated by idx 4 (1500)
+    local bData = ns.GetCharacterBracketData(rec, "Blitz")
+    assert(bData, "Blitz data must exist")
+    assert(bData.current == 1600, "Blitz rating must be 1600 (was: " .. tostring(bData.current) .. ")")
+
+    -- Check 2v2 and 3v3 ratings
+    local twoData = ns.GetCharacterBracketData(rec, "2v2")
+    local threeData = ns.GetCharacterBracketData(rec, "3v3")
+    assert(twoData and twoData.current == 1750, "2v2 rating must be 1750")
+    assert(threeData and threeData.current == 1820, "3v3 rating must be 1820")
+`, 'Verified rating accuracy without 10v10 RBG contamination');
+
+runLua(`
+    -- 10. Multi-Spec & Alt Rating Backfilling Verification
+    -- Create Alt character with match history but no prior bracketRatings entry
+    local altKey = "FrostyMage-TwistingNether"
+    AlterArenaDB.players[altKey] = {
+        name = "FrostyMage",
+        realm = "TwistingNether",
+        class = "MAGE",
+        spec = "Frost",
+        matches = {
+            {
+                bracket = "Solo Shuffle",
+                spec = "Frost",
+                ratingAfter = 2150,
+                ratingBefore = 2125,
+                ratingChange = 25,
+                mmrAfter = 2160,
+                won = true,
+                duration = 320,
+            },
+            {
+                bracket = "2v2",
+                ratingAfter = 1880,
+                ratingBefore = 1865,
+                ratingChange = 15,
+                won = true,
+                duration = 180,
+            }
+        }
+    }
+
+    -- Run auto-sanitizer / backfiller
+    ns.SanitizeAllPlayerRecords()
+
+    local altRec = AlterArenaDB.players[altKey]
+    local altShuffle = ns.GetCharacterBracketData(altRec, "Shuffle", "Frost")
+    assert(altShuffle, "Alt Shuffle data should be inferred from match history")
+    assert(altShuffle.current == 2150, "Alt Shuffle rating should be 2150 (got " .. tostring(altShuffle.current) .. ")")
+
+    local altTwo = ns.GetCharacterBracketData(altRec, "2v2")
+    assert(altTwo and altTwo.current == 1880, "Alt 2v2 rating should be 1880")
+
+    -- Render Roster UI with both main and alt
+    if ns.RefreshUI then
+        ns.RefreshUI()
+    end
+`, 'Verified alt rating backfilling and multi-character roster overview rendering');
 
 console.log('\n====================================================');
 if (failedTests === 0) {

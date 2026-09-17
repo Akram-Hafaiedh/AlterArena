@@ -62,7 +62,6 @@ local function GetBracketIndex(bracketName)
     EnsurePVPInfo()
     local target = string.lower(bracketName or "")
 
-    -- 1. Check Blizzard's CONQUEST tables if available
     if CONQUEST_SIZE_STRINGS and CONQUEST_BRACKET_INDEXES then
         for i, name in pairs(CONQUEST_SIZE_STRINGS) do
             if name and string.find(string.lower(name), target) then
@@ -71,75 +70,15 @@ local function GetBracketIndex(bracketName)
         end
     end
 
-    -- 2. Dynamic heuristic fallbacks for Retail WoW
-    if target == "2v2" then
-        return 1
-    elseif target == "3v3" then
-        return 2
-    elseif target == "shuffle" or target == "solo shuffle" then
-        -- In Retail, Solo Shuffle is typically index 7 or 4
-        for _, idx in ipairs({ 7, 4, 3 }) do
-            if GetPersonalRatedInfo then
-                local rating, _, _, played, _, _, _, _, _, _, _, rounds = GetPersonalRatedInfo(idx)
-                if (rounds and rounds > 0) or (played and played > 0) or (rating and rating > 0) then
-                    return idx
-                end
-            end
-        end
-        return 7
-    elseif target == "blitz" or target == "battleground blitz" then
-        for _, idx in ipairs({ 9, 8, 4 }) do
-            if GetPersonalRatedInfo then
-                local rating, _, _, played = GetPersonalRatedInfo(idx)
-                if (played and played > 0) or (rating and rating > 0) then
-                    return idx
-                end
-            end
-        end
-        return 9
-    end
-
+    if target == "2v2" then return 1 end
+    if target == "3v3" then return 2 end
+    if target == "shuffle" then return 7 end
+    if target == "blitz" then return 9 end
     return 1
 end
 
-local function GetPVPHubPreviousRating(bracketName)
-    local target = string.lower(bracketName or "")
-    if target == "shuffle" then target = "solo shuffle" end
-    if target == "blitz" then target = "battleground blitz" end
-
-    -- Check if PVPHub (or any similar addon) has stored bracket data in _G
-    for gName, gVal in pairs(_G) do
-        if type(gName) == "string" and string.find(string.upper(gName), "PVPHUB") and type(gVal) == "table" then
-            local function searchTable(tbl, depth)
-                if depth > 5 or type(tbl) ~= "table" then return nil end
-                -- Check table entries
-                for k, v in pairs(tbl) do
-                    if type(v) == "table" then
-                        local kStr = string.lower(tostring(k))
-                        local bStr = string.lower(tostring(v.bracket or v.bracketName or v.name or ""))
-                        local isBracket = string.find(kStr, target) or (bStr ~= "" and string.find(bStr, target))
-                        if isBracket then
-                            local prev = v.previousRating or v.prevRating or v.ratingBefore or v.oldRating or v.prev
-                            local curr = v.currentRating or v.rating or v.ratingAfter or v.current
-                            local chg = v.change or v.ratingChange or v.diff
-                            if prev and curr then
-                                return prev, curr, chg or (curr - prev)
-                            end
-                        end
-                        local p, c, d = searchTable(v, depth + 1)
-                        if p and c then return p, c, d end
-                    end
-                end
-                return nil
-            end
-            local prev, curr, chg = searchTable(gVal, 1)
-            if prev and curr then
-                return prev, curr, chg
-            end
-        end
-    end
-    return nil
-end
+-- Rating data sources: WoW API (GetPersonalRatedInfo) + our own match history only.
+-- No external addon data scraping.
 
 local function GetCurrentSpecName()
     if GetSpecialization and GetSpecializationInfo then
@@ -175,27 +114,26 @@ local function UpdatePlayerBracketRating(bracketName, currentRating)
     local data = record.bracketRatings[storageKey] or record.bracketRatings[bracketName]
 
     if not data then
-        local pBefore, pAfter, pChange = GetPVPHubPreviousRating(bracketName)
-        if pBefore and pAfter and pAfter == currentRating then
-            record.bracketRatings[storageKey] = {
-                current = pAfter,
-                previous = pBefore,
-                change = pChange or (pAfter - pBefore),
-            }
-        else
-            record.bracketRatings[storageKey] = {
-                current = currentRating,
-                previous = nil,
-                change = 0,
-            }
-        end
+        record.bracketRatings[storageKey] = {
+            current = currentRating,
+            previous = nil,
+            change = 0,
+        }
         return
     end
 
-    if data.current and data.current > 0 and currentRating ~= data.current then
-        data.previous = data.current
-        data.current = currentRating
-        data.change = currentRating - data.previous
+    -- NEW
+    local recentMatch = ns.lastMatchTimestamp and (time() - ns.lastMatchTimestamp) < 90
+    if currentRating ~= data.current then
+        if recentMatch and data.current then
+            data.previous = data.current
+            data.current  = currentRating
+            data.change   = currentRating - data.previous
+        else
+            data.current  = currentRating
+            data.previous = nil
+            data.change   = 0
+        end
         record.bracketRatings[storageKey] = data
     end
 end
@@ -217,7 +155,7 @@ local function GetBracketRating(bracketName)
     -- Fallback scan across common indices for that bracket
     if not rating then
         if bracketName == "Shuffle" or bracketName == "Solo Shuffle" then
-            for _, testIdx in ipairs({ 7, 4, 3 }) do
+            for _, testIdx in ipairs({ 7, 3 }) do
                 local r = GetPersonalRatedInfo(testIdx)
                 if r and r > 0 then
                     rating = r
@@ -225,7 +163,7 @@ local function GetBracketRating(bracketName)
                 end
             end
         elseif bracketName == "Blitz" then
-            for _, testIdx in ipairs({ 9, 8, 4 }) do
+            for _, testIdx in ipairs({ 9, 8 }) do
                 local r = GetPersonalRatedInfo(testIdx)
                 if r and r > 0 then
                     rating = r
@@ -286,12 +224,6 @@ local function GetLastMatchRating(bracketName)
         if bData and bData.previous and bData.current then
             return bData.previous, bData.current, bData.change or (bData.current - bData.previous)
         end
-    end
-
-    -- 3. Check PVPHub if loaded as fallback
-    local pBefore, pAfter, pChange = GetPVPHubPreviousRating(bracketName)
-    if pBefore and pAfter then
-        return pBefore, pAfter, pChange
     end
 
     return nil

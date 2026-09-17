@@ -15,6 +15,8 @@ local function EnsurePVPInfo()
     end
     if RequestRatedInfo then
         pcall(RequestRatedInfo)
+    elseif C_PvP and C_PvP.RequestRatedInfo then
+        pcall(C_PvP.RequestRatedInfo)
     end
 end
 
@@ -22,7 +24,10 @@ local function GetBracketName(bracketIndex)
     if CONQUEST_SIZE_STRINGS and CONQUEST_BRACKET_INDEXES then
         for i, idx in pairs(CONQUEST_BRACKET_INDEXES) do
             if idx == bracketIndex and CONQUEST_SIZE_STRINGS[i] then
-                return CONQUEST_SIZE_STRINGS[i]
+                local str = CONQUEST_SIZE_STRINGS[i]
+                if string.find(str, "Shuffle") then return "Solo Shuffle" end
+                if string.find(str, "Blitz") then return "Blitz" end
+                return str
             end
         end
     end
@@ -31,7 +36,7 @@ local function GetBracketName(bracketIndex)
         [1] = "2v2",
         [2] = "3v3",
         [3] = "10v10",
-        [4] = "Solo Shuffle",
+        [4] = "10v10",
         [7] = "Solo Shuffle",
         [8] = "Blitz",
         [9] = "Blitz",
@@ -724,12 +729,13 @@ local function OnMatchComplete()
         end
     end
 
-    C_Timer.After(1.0, PollRating)
-
+    ns.lastMatchTimestamp = time()
+    
     if matchEntry.bracket and matchEntry.ratingAfter and ns.UpdateBracketRatingTracking then
         ns.UpdateBracketRatingTracking(matchEntry.bracket, matchEntry.ratingAfter)
     end
-
+    
+    C_Timer.After(1.0, PollRating)
     pendingMatch = nil
 
     if ns.RefreshUI then

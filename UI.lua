@@ -487,27 +487,28 @@ local function UpdateSettingsButtonState(frame)
     end
 end
 
+
 -- Renders the AlterEgo-style Alt Grid View
 local function RenderRosterView(frame)
     frame.filterBar:Hide()
     if frame.historyFooter then frame.historyFooter:Hide() end
     frame.scrollFrame:SetPoint("BOTTOMRIGHT", -32, 14)
     selectedMatch = nil
-
+    
     SetTabActive(frame.tabRoster, true)
     SetTabActive(frame.tabHistory, false)
     UpdateSettingsButtonState(frame)
-
+    
     -- Make sure active character's ratings and spec are up-to-date
     if ns.UpdateAllCharacterRatings then
         ns.UpdateAllCharacterRatings()
     end
-
+    
     local keys = GetSortedCharacterKeys()
     local totalMatchesAll = 0
     local totalWinsAll = 0
     local peakRatingAll = 0
-
+    
     -- Aggregate stats across all characters & matches & bracket ratings
     for _, key in ipairs(keys) do
         local rec = AlterArenaDB.players[key]
@@ -645,8 +646,14 @@ local function RenderRosterView(frame)
                 GameTooltip:Show()
             end)
             row:SetScript("OnLeave", function(self)
-                local bgAlpha = (self.rowIndex % 2 == 0) and 0.5 or 0.25
-                self:SetBackdropColor(0.09, 0.09, 0.12, bgAlpha)
+                if self.playerRec and self.playerRec.name == UnitName("player") and self.playerRec.realm == GetRealmName() then
+                    self:SetBackdropColor(0.10, 0.16, 0.12, 0.85)
+                    self:SetBackdropBorderColor(0.22, 0.55, 0.28, 0.9)
+                else
+                    local bgAlpha = (self.rowIndex % 2 == 0) and 0.5 or 0.25
+                    self:SetBackdropColor(0.09, 0.09, 0.12, bgAlpha)
+                    self:SetBackdropBorderColor(0.14, 0.14, 0.18, 0.6)
+                end
                 GameTooltip:Hide()
             end)
 
@@ -692,14 +699,17 @@ local function RenderRosterView(frame)
 
     -- Helper to format rating with optional delta (+25)
     local function FormatRatingWithDelta(bData)
-        if not bData or not bData.current or bData.current <= 0 then
+        if not bData then return "|cff777788---|r" end
+        local rVal = bData.current or bData.rating
+        if not rVal or rVal <= 0 then
             return "|cff777788---|r"
         end
-        local col, valStr = GetRatingColor(bData.current)
-        if bData.change and bData.change ~= 0 and math.abs(bData.change) <= 150 then
-            local chgStr = (bData.change > 0)
-                and string.format(" |cff22c55e(+%d)|r", bData.change)
-                or string.format(" |cffef4444(%d)|r", bData.change)
+        local col, valStr = GetRatingColor(rVal)
+        local chg = bData.change or bData.ratingChange
+        if chg and chg ~= 0 and math.abs(chg) <= 150 then
+            local chgStr = (chg > 0)
+                and string.format(" |cff22c55e(+%d)|r", chg)
+                or string.format(" |cffef4444(%d)|r", chg)
             return string.format("|c%s%s|r%s", col, valStr, chgStr)
         end
         return string.format("|c%s%s|r", col, valStr)
@@ -707,19 +717,26 @@ local function RenderRosterView(frame)
 
     for _, key in ipairs(keys) do
         local rec = AlterArenaDB.players[key]
+        local isCurrentChar = (key == ns.GetPlayerKey())
         rowCounter = rowCounter + 1
         local row = GetOrCreateRosterRow(rowCounter)
 
         row.rowIndex = rowCounter
         row.playerRec = rec
         local bgAlpha = (rowCounter % 2 == 0) and 0.5 or 0.25
-        row:SetBackdropColor(0.09, 0.09, 0.12, bgAlpha)
-        row:SetBackdropBorderColor(0.14, 0.14, 0.18, 0.6)
+
+        if isCurrentChar then
+            row:SetBackdropColor(0.10, 0.16, 0.12, 0.85)
+            row:SetBackdropBorderColor(0.22, 0.55, 0.28, 0.9)
+        else
+            row:SetBackdropColor(0.09, 0.09, 0.12, bgAlpha)
+            row:SetBackdropBorderColor(0.14, 0.14, 0.18, 0.6)
+        end
+
         row:SetPoint("TOPLEFT", 2, rowY)
 
         local charColor = GetClassColor(rec.class)
-        local isCurrentChar = (key == ns.GetPlayerKey())
-        local curMarker = isCurrentChar and " |cffffd100*|r" or ""
+        local curMarker = isCurrentChar and "  |A:communities-icon-notification:13:13|a" or ""
         row.charText:SetText(string.format("|c%s%s|r%s", charColor.colorStr or "ffffffff", rec.name or key, curMarker))
 
         -- Spec display with icon if available
@@ -729,8 +746,30 @@ local function RenderRosterView(frame)
             local sIdx = GetSpecialization()
             if sIdx then
                 local _, sName, _, sIcon = GetSpecializationInfo(sIdx)
-                if sName then specName = sName end
-                if sIcon then specIcon = sIcon end
+                if sName then specName = sName rec.spec = sName end
+                if sIcon then specIcon = sIcon rec.specIcon = sIcon end
+            end
+        end
+
+        -- If specName is still missing on alt, check specStats or matches
+        if not specName then
+            if rec.specStats then
+                for sName, sData in pairs(rec.specStats) do
+                    if sData and ((sData.roundsPlayed and sData.roundsPlayed > 0) or (sData.rating and sData.rating > 0)) then
+                        specName = sName
+                        specIcon = sData.icon
+                        break
+                    end
+                end
+            end
+            if not specName and rec.matches and #rec.matches > 0 then
+                for i = #rec.matches, 1, -1 do
+                    if rec.matches[i].spec then
+                        specName = rec.matches[i].spec
+                        specIcon = rec.matches[i].specIcon
+                        break
+                    end
+                end
             end
         end
 
@@ -746,11 +785,10 @@ local function RenderRosterView(frame)
         end
         row.specText:SetText(specDisplay)
 
-        local bRatings = rec.bracketRatings or {}
-        local shuffleData = bRatings["Shuffle"] or bRatings["Solo Shuffle"]
-        local blitzData = bRatings["Blitz"] or bRatings["Battleground Blitz"]
-        local twoData = bRatings["2v2"]
-        local threeData = bRatings["3v3"]
+        local shuffleData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "Shuffle", specName)
+        local blitzData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "Blitz", specName)
+        local twoData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "2v2")
+        local threeData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "3v3")
 
         row.shuffleText:SetText(FormatRatingWithDelta(shuffleData))
         row.blitzText:SetText(FormatRatingWithDelta(blitzData))
@@ -765,6 +803,11 @@ local function RenderRosterView(frame)
             charWins = shuffleData.roundsWon or 0
             charTotal = shuffleData.roundsPlayed
             charLoss = shuffleData.roundsLost or (charTotal - charWins)
+        elseif specName and rec.specStats and rec.specStats[specName] and rec.specStats[specName].roundsPlayed and rec.specStats[specName].roundsPlayed > 0 then
+            local ss = rec.specStats[specName]
+            charWins = ss.roundsWon or 0
+            charTotal = ss.roundsPlayed
+            charLoss = ss.roundsLost or (charTotal - charWins)
         elseif rec.matches and #rec.matches > 0 then
             charTotal = #rec.matches
             for _, m in ipairs(rec.matches) do
@@ -783,7 +826,7 @@ local function RenderRosterView(frame)
         -- Check for secondary specs played (e.g. Affliction when Destruction is active)
         if rec.specStats then
             for sName, sData in pairs(rec.specStats) do
-                if sName ~= specName and sData.roundsPlayed and sData.roundsPlayed > 0 then
+                if sName ~= specName and ((sData.roundsPlayed and sData.roundsPlayed > 0) or (sData.rating and sData.rating > 0)) then
                     rowCounter = rowCounter + 1
                     local subRow = GetOrCreateRosterRow(rowCounter)
                     subRow.rowIndex = rowCounter
@@ -802,15 +845,16 @@ local function RenderRosterView(frame)
                     end
                     subRow.specText:SetText(subSpecDisplay)
 
-                    local sCol, sVal = GetRatingColor(sData.rating or 0)
-                    subRow.shuffleText:SetText(string.format("|c%s%s|r", sCol, sVal))
+                    local subShuffleData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "Shuffle", sName) or sData
+                    subRow.shuffleText:SetText(FormatRatingWithDelta(subShuffleData))
                     subRow.blitzText:SetText("|cff555566---|r")
                     subRow.twoText:SetText("|cff555566---|r")
                     subRow.threeText:SetText("|cff555566---|r")
 
                     local sW = sData.roundsWon or 0
-                    local sL = sData.roundsLost or (sData.roundsPlayed - sW)
-                    local sPct = sData.winRate or 0
+                    local sL = sData.roundsLost or ((sData.roundsPlayed or 0) - sW)
+                    local sTot = (sData.roundsPlayed and sData.roundsPlayed > 0) and sData.roundsPlayed or (sW + sL)
+                    local sPct = sData.winRate or ((sTot > 0) and math.floor((sW / sTot) * 100) or 0)
                     local sPctCol = (sPct >= 50) and "ff22c55e" or "ffef4444"
                     subRow.recordText:SetText(string.format("|cff22c55e%d|r - |cffef4444%d|r (|c%s%.0f%%|r)", sW, sL, sPctCol, sPct))
 
@@ -1273,6 +1317,7 @@ local function RenderHistoryView(frame)
 
         row.rowIndex = i
         row.matchData = m
+        
         local isSelected = (selectedMatches[m] == true)
         if isSelected then
             row:SetBackdropColor(0.20, 0.18, 0.32, 0.95)
