@@ -58,6 +58,37 @@ local function EnsureDBDefaults()
     end
 end
 
+-- Cached at load so filter logic can run synchronously without pcall noise.
+ns.currentSeasonId = nil
+
+function ns.RefreshCurrentSeason()
+    if C_Seasons and C_Seasons.GetActiveSeason then
+        local ok, id = pcall(C_Seasons.GetActiveSeason)
+        if ok and id and type(id) == "number" then
+            ns.currentSeasonId = id
+            return
+        end
+    end
+    if GetCurrentArenaSeason then
+        local ok, n = pcall(GetCurrentArenaSeason)
+        if ok and n and type(n) == "number" then
+            ns.currentSeasonId = n
+            return
+        end
+    end
+    ns.currentSeasonId = nil
+
+    -- Detect a season rollover: if the cached ID changed and we had one
+    -- before, remember the old one as "last season".
+    if ns.currentSeasonId and AlterArenaDB.lastKnownSeasonId
+       and AlterArenaDB.lastKnownSeasonId ~= ns.currentSeasonId then
+        AlterArenaDB.lastSeasonId = AlterArenaDB.lastKnownSeasonId
+    end
+    if ns.currentSeasonId then
+        AlterArenaDB.lastKnownSeasonId = ns.currentSeasonId
+    end
+end
+
 function ns.GetPlayerKey()
     local name = UnitName("player")
     local realm = GetRealmName()
@@ -557,6 +588,7 @@ eventFrame:RegisterEvent("PVP_RATED_STATS_UPDATE")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         EnsureDBDefaults()
+        ns.RefreshCurrentSeason()
         ns.EnsurePlayerRecord()
 
         if ns.InitMatchTracker then
@@ -583,6 +615,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         print("|cff40c0ffAlterArena|r loaded. Type /alterarena (or /aa) to view your history.")
     elseif event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_SPECIALIZATION_CHANGED" or event == "PVP_RATED_STATS_UPDATE" then
         if AlterArenaDB and AlterArenaDB.players then
+            ns.RefreshCurrentSeason()
             ns.EnsurePlayerRecord()
             ns.RequestPVPStats()
             ns.SanitizeAllPlayerRecords()

@@ -2,8 +2,44 @@ local ADDON_NAME, ns = ...
 
 local mainFrame
 local activeTab = "roster" -- "roster" or "history"
-local historyFilter = "ALL" -- "ALL", "Shuffle", "Blitz", "2v2", "3v3"
 local rosterSortMode = "name" -- "name", "rating", "recent", "winrate"
+
+
+
+-- Curated lists of rated-PvP maps. Names must match GetRealZoneText() output.
+-- If a name here doesn't match, that radio just yields zero results until
+-- the user plays on it and the dynamic discovery picks up the real string.
+local KNOWN_ARENA_MAPS = {
+    "Hook Point",
+    "Blade's Edge Arena",
+    "Ruins of Lordaeron",
+    "The Robodrome",
+    "Ashamane's Fall",
+    "Empyrean Domain",
+    "Nokhudon Proving Grounds",
+    "Maldraxxus Coliseum",
+    "The Tiger's Peak",
+    "Enigma Crucible",
+    "Cage of Carnage",
+    "Tol'viron Arena",
+    "Nagrand Arena",
+    "Mugambala",
+    "Black Rook Hold Arena",
+}
+
+local KNOWN_BG_MAPS = {
+    "Warsong Gulch",
+    "Arathi Basin",
+    "Eye of the Storm",
+    "Temple of Kotmogu",
+    "Silvershard Mines",
+    "Deepwind Gorge",
+    "Twin Peaks",
+    "Battle for Gilneas",
+    "Isle of Conquest",
+    "Alterac Valley",
+    "Seething Shore",
+}
 
 local selectedCharKey = nil
 local selectedMatches = {}
@@ -12,6 +48,55 @@ local sessionStartTime = time()
 local ROW_HEIGHT = 28
 local FRAME_WIDTH = 960
 local FRAME_HEIGHT = 540
+
+local historyFilters = {
+    bracket = "ALL",   -- "ALL" | "Shuffle" | "Blitz" | "2v2" | "3v3"
+    result  = "ALL",   -- "ALL" | "WINS" | "LOSSES" | "DRAWS"
+    map     = "ALL",   -- "ALL" | <map name string>
+    date    = "ALL",   -- "ALL" | "TODAY" | "THISWEEK" | "THISMONTH" | "LAST3MONTHS" | "LAST6MONTHS"
+    season  = "ALL",   -- "ALL" | "CURRENT" | "LAST"
+}
+
+local BRACKET_LABELS = {
+    ALL     = "All Brackets",
+    Shuffle = "Solo Shuffle",
+    Blitz   = "Battleground Blitz",
+    ["2v2"] = "2v2 Arena",
+    ["3v3"] = "3v3 Arena",
+}
+
+local RESULT_LABELS = {
+    ALL    = "Any Result",
+    WINS   = "Wins Only",
+    LOSSES = "Losses Only",
+    DRAWS  = "Draws Only",
+}
+
+local DATE_LABELS = {
+    ALL         = "All Time",
+    TODAY       = "Last 24 Hours",
+    THISWEEK    = "Last 7 Days",
+    THISMONTH   = "Last 30 Days",
+    LAST3MONTHS = "Last 3 Months",
+    LAST6MONTHS = "Last 6 Months",
+}
+
+local SEASON_LABELS = {
+    ALL     = "All Seasons",
+    CURRENT = "Current Season",
+    LAST    = "Last Season",
+}
+
+-- Cutoff in seconds for each date filter key.
+local DATE_CUTOFFS = {
+    TODAY       = 24 * 3600,
+    THISWEEK    = 7 * 24 * 3600,
+    THISMONTH   = 30 * 24 * 3600,
+    LAST3MONTHS = 90 * 24 * 3600,
+    LAST6MONTHS = 180 * 24 * 3600,
+}
+
+
 
 local function GetPvPTierName(rating)
     if not rating or rating <= 0   then return nil          end
@@ -207,6 +292,194 @@ local function CreateStyledButton(parent, text, width, height)
     return btn
 end
 
+local function UpdateMoreFiltersButton(frame)
+    if not frame or not frame.moreFiltersBtn then return end
+    local count = 0
+    if historyFilters.result ~= "ALL" then count = count + 1 end
+    if historyFilters.date   ~= "ALL" then count = count + 1 end
+    if historyFilters.map    ~= "ALL" then count = count + 1 end
+    if historyFilters.season ~= "ALL" then count = count + 1 end
+    
+    if count > 0 then
+        frame.moreFiltersBtn:SetBackdropColor(0.20, 0.24, 0.32, 1)
+        frame.moreFiltersBtn:SetBackdropBorderColor(0.8, 0.65, 0.2, 1)
+        frame.moreFiltersBtn.text:SetText(string.format("|cffffd100Filters (%d)|r", count))
+    else
+        frame.moreFiltersBtn:SetBackdropColor(0.12, 0.13, 0.16, 0.9)
+        frame.moreFiltersBtn:SetBackdropBorderColor(0.22, 0.23, 0.28, 0.9)
+        frame.moreFiltersBtn.text:SetText("|cff9999aaMore Filters|r")
+    end
+end
+
+function ns.ShowMoreFilters(anchor)
+    -- Result submenu
+    local resultSub = {}
+    for _, id in ipairs({ "ALL", "WINS", "LOSSES", "DRAWS" }) do
+        local rid = id
+        table.insert(resultSub, {
+            type  = "radio",
+            label = RESULT_LABELS[rid],
+            checked = function() return historyFilters.result == rid end,
+            onClick = function() historyFilters.result = rid; ns.RefreshUI() end,
+        })
+    end
+
+    -- Date submenu
+    local dateSub = {}
+    for _, id in ipairs({ "ALL", "TODAY", "THISWEEK", "THISMONTH", "LAST3MONTHS", "LAST6MONTHS" }) do
+        local did = id
+        table.insert(dateSub, {
+            type  = "radio",
+            label = DATE_LABELS[did],
+            checked = function() return historyFilters.date == did end,
+            onClick = function() historyFilters.date = did; ns.RefreshUI() end,
+        })
+    end
+
+    -- Season submenu
+    local seasonSub = {}
+    for _, id in ipairs({ "ALL", "CURRENT", "LAST" }) do
+        local sid = id
+        table.insert(seasonSub, {
+            type  = "radio",
+            label = SEASON_LABELS[sid],
+            checked = function() return historyFilters.season == sid end,
+            onClick = function() historyFilters.season = sid; ns.RefreshUI() end,
+        })
+    end
+
+    -- Arena maps submenu
+    local arenaItems = {}
+    for _, mp in ipairs(KNOWN_ARENA_MAPS) do
+        local mpm = mp
+        table.insert(arenaItems, {
+            type  = "radio",
+            label = mpm,
+            checked = function() return historyFilters.map == mpm end,
+            onClick = function() historyFilters.map = mpm; ns.RefreshUI() end,
+        })
+    end
+
+    -- BG maps submenu
+    local bgItems = {}
+    for _, mp in ipairs(KNOWN_BG_MAPS) do
+        local mpm = mp
+        table.insert(bgItems, {
+            type  = "radio",
+            label = mpm,
+            checked = function() return historyFilters.map == mpm end,
+            onClick = function() historyFilters.map = mpm; ns.RefreshUI() end,
+        })
+    end
+
+    -- "Other" submenu — maps discovered from history
+    local otherItems = {}
+    do
+        local effectiveKey = selectedCharKey or (ns.GetPlayerKey and ns.GetPlayerKey())
+        local seen = {}
+        for _, mp in ipairs(KNOWN_ARENA_MAPS) do seen[mp] = true end
+        for _, mp in ipairs(KNOWN_BG_MAPS)   do seen[mp] = true end
+
+        local extras = {}
+        local rec = effectiveKey and AlterArenaDB.players[effectiveKey]
+        if rec and rec.matches then
+            for _, m in ipairs(rec.matches) do
+                local mp = m.map
+                if mp and mp ~= "" and not seen[mp] then
+                    seen[mp] = true
+                    table.insert(extras, mp)
+                end
+            end
+        end
+        table.sort(extras)
+
+        for _, mp in ipairs(extras) do
+            local mpm = mp
+            table.insert(otherItems, {
+                type  = "radio",
+                label = mpm,
+                checked = function() return historyFilters.map == mpm end,
+                onClick = function() historyFilters.map = mpm; ns.RefreshUI() end,
+            })
+        end
+    end
+
+    -- Map submenu tree
+    local mapSub = {
+        {
+            type  = "radio",
+            label = "All Maps",
+            checked = function() return historyFilters.map == "ALL" end,
+            onClick = function() historyFilters.map = "ALL"; ns.RefreshUI() end,
+        },
+        { type = "divider" },
+        {
+            type  = "radio",
+            label = "Arena Maps",
+            submenu = arenaItems,
+            checked = function() return false end,
+        },
+        {
+            type  = "radio",
+            label = "Battleground Maps",
+            submenu = bgItems,
+            checked = function() return false end,
+        },
+    }
+    if #otherItems > 0 then
+        table.insert(mapSub, {
+            type  = "radio",
+            label = "Other / Historical",
+            submenu = otherItems,
+            checked = function() return false end,
+        })
+    end
+
+    -- Root menu
+    local mapLabel = (historyFilters.map == "ALL") and "Map: All" or ("Map: " .. historyFilters.map)
+    local items = {
+        {
+            type  = "radio",
+            label = "Result: " .. RESULT_LABELS[historyFilters.result],
+            submenu = resultSub,
+            checked = function() return historyFilters.result ~= "ALL" end,
+        },
+        {
+            type  = "radio",
+            label = "Date: " .. DATE_LABELS[historyFilters.date],
+            submenu = dateSub,
+            checked = function() return historyFilters.date ~= "ALL" end,
+        },
+        {
+            type  = "radio",
+            label = "Season: " .. SEASON_LABELS[historyFilters.season],
+            submenu = seasonSub,
+            checked = function() return historyFilters.season ~= "ALL" end,
+        },
+        {
+            type  = "radio",
+            label = mapLabel,
+            submenu = mapSub,
+            checked = function() return historyFilters.map ~= "ALL" end,
+        },
+        { type = "divider" },
+        {
+            type  = "button",
+            label = "Reset all filters",
+            onClick = function()
+                historyFilters.bracket = "ALL"
+                historyFilters.result  = "ALL"
+                historyFilters.map     = "ALL"
+                historyFilters.date    = "ALL"
+                historyFilters.season  = "ALL"
+                ns.RefreshUI()
+            end,
+        },
+    }
+
+    ns.OpenDropdown(anchor, items)
+end
+
 -- Create AlterEgo dark main window
 local function CreateMainFrame()
     local frame = CreateFrame("Frame", "AlterArenaMainFrame", UIParent, "BackdropTemplate")
@@ -279,7 +552,10 @@ local function CreateMainFrame()
         self:SetBackdropColor(0.15, 0.15, 0.18, 0.8)
         self.text:SetText("|cffaaaaaa×|r")
     end)
-    closeBtn:SetScript("OnClick", function() frame:Hide() end)
+    closeBtn:SetScript("OnClick", function()
+        if ns.CloseDropdowns then ns.CloseDropdowns() end
+        frame:Hide()
+    end)
 
     -- Cogwheel Settings Button (Top-Right near Close Button)
     local settingsBtn = CreateFrame("Button", nil, titleBar, "BackdropTemplate")
@@ -351,32 +627,50 @@ local function CreateMainFrame()
     filterBar:SetSize(310, 26)
     frame.filterBar = filterBar
 
-    local filterButtons = {}
-    local filterLabels = {
-        { id = "ALL", text = "All" },
-        { id = "Shuffle", text = "Shuffle" },
-        { id = "Blitz", text = "Blitz" },
-        { id = "2v2", text = "2v2" },
-        { id = "3v3", text = "3v3" },
-    }
+        -- Bracket dropdown + Clear button
+    filterBar:SetSize(212, 26)
 
-    local prevBtn = nil
-    for _, f in ipairs(filterLabels) do
-        local btn = CreateStyledButton(filterBar, f.text, 54, 22)
-        if not prevBtn then
-            btn:SetPoint("LEFT", 0, 0)
-        else
-            btn:SetPoint("LEFT", prevBtn, "RIGHT", 4, 0)
+    local bracketBtn = CreateStyledButton(filterBar, "Bracket", 140, 26)
+    bracketBtn:SetPoint("LEFT", 0, 0)
+    bracketBtn:SetScript("OnClick", function(self)
+        local items = {}
+        for _, id in ipairs({ "ALL", "Shuffle", "Blitz", "2v2", "3v3" }) do
+            local bracketId = id
+            table.insert(items, {
+                type  = "radio",
+                label = BRACKET_LABELS[bracketId],
+                checked = function() return historyFilters.bracket == bracketId end,
+                onClick = function()
+                    historyFilters.bracket = bracketId
+                    ns.RefreshUI()
+                end,
+            })
         end
-        btn.filterId = f.id
-        btn:SetScript("OnClick", function(self)
-            historyFilter = self.filterId
-            ns.RefreshUI()
-        end)
-        filterButtons[f.id] = btn
-        prevBtn = btn
-    end
-    frame.filterButtons = filterButtons
+        ns.OpenDropdown(self, items)
+    end)
+    frame.bracketBtn = bracketBtn
+
+    local clearBtn = CreateStyledButton(filterBar, "Clear", 64, 26)
+    clearBtn:SetPoint("RIGHT", 0, 0)
+    clearBtn:SetScript("OnClick", function()
+        historyFilters.bracket = "ALL"
+        historyFilters.result  = "ALL"
+        historyFilters.map     = "ALL"
+        historyFilters.date    = "ALL"
+        historyFilters.season  = "ALL"
+        ns.RefreshUI()
+    end)
+    clearBtn:Hide()
+    frame.clearFiltersBtn = clearBtn
+
+    local moreBtn = CreateStyledButton(navBar, "More Filters", 100, 26)
+    moreBtn:SetPoint("RIGHT", filterBar, "LEFT", -8, 0)
+    moreBtn:SetScript("OnClick", function(self)
+        if ns.ShowMoreFilters then
+            ns.ShowMoreFilters(self)
+        end
+    end)
+    frame.moreFiltersBtn = moreBtn
 
     frame.tabRoster:SetScript("OnClick", function()
         activeTab = "roster"
@@ -454,10 +748,10 @@ local function CreateMainFrame()
     historyFooter.sessionCenter2 = sessionCenter2
 
     -- Bottom Right: Clear Selected Button (appears only when matches are selected)
-    local clearBtn = CreateStyledButton(historyFooter, "Clear Selected", 135, 26)
-    clearBtn:SetPoint("RIGHT", -12, 0)
-    clearBtn:Hide()
-    clearBtn:SetScript("OnClick", function()
+    local clearSelectedBtn = CreateStyledButton(historyFooter, "Clear Selected", 135, 26)
+    clearSelectedBtn:SetPoint("RIGHT", -12, 0)
+    clearSelectedBtn:Hide()
+    clearSelectedBtn:SetScript("OnClick", function()
         if not selectedCharKey then return end
         local pRec = AlterArenaDB.players[selectedCharKey]
         if not pRec or not pRec.matches then return end
@@ -477,7 +771,7 @@ local function CreateMainFrame()
         end
         ns.RefreshUI()
     end)
-    historyFooter.clearBtn = clearBtn
+    historyFooter.clearBtn = clearSelectedBtn
 
     frame:Hide()
     return frame
@@ -559,7 +853,6 @@ local function UpdateSettingsButtonState(frame)
         if frame.settingsBtn.icon then frame.settingsBtn.icon:SetVertexColor(0.75, 0.75, 0.8) end
     end
 end
-
 
 -- Renders the AlterEgo-style Alt Grid View
 local function RenderRosterView(frame)
@@ -1070,10 +1363,35 @@ local function RenderHistoryView(frame)
     SetTabActive(frame.tabHistory, true)
     UpdateSettingsButtonState(frame)
 
-    -- Update active filter buttons
-    for id, btn in pairs(frame.filterButtons) do
-        SetTabActive(btn, id == historyFilter)
+        -- Update bracket button label + Clear button visibility
+    if frame.bracketBtn then
+        local current = BRACKET_LABELS[historyFilters.bracket] or "Bracket"
+        local active = (historyFilters.bracket ~= "ALL")
+        if active then
+            frame.bracketBtn:SetBackdropColor(0.20, 0.24, 0.32, 1)
+            frame.bracketBtn:SetBackdropBorderColor(0.8, 0.65, 0.2, 1)
+            frame.bracketBtn.text:SetText("|cffffd100" .. current .. "|r")
+        else
+            frame.bracketBtn:SetBackdropColor(0.12, 0.13, 0.16, 0.9)
+            frame.bracketBtn:SetBackdropBorderColor(0.22, 0.23, 0.28, 0.9)
+            frame.bracketBtn.text:SetText("|cff9999aa" .. current .. "|r")
+        end
     end
+
+    if frame.clearFiltersBtn then
+        local anyActive = (historyFilters.bracket ~= "ALL")
+                       or (historyFilters.result  ~= "ALL")
+                       or (historyFilters.map     ~= "ALL")
+                       or (historyFilters.season  ~= "ALL")
+                       or (historyFilters.date    ~= "ALL")
+        if anyActive then
+            frame.clearFiltersBtn:Show()
+        else
+            frame.clearFiltersBtn:Hide()
+        end
+    end
+
+    UpdateMoreFiltersButton(frame)
 
     selectedCharKey = selectedCharKey or ns.GetPlayerKey()
     local rec = AlterArenaDB.players[selectedCharKey]
@@ -1085,17 +1403,62 @@ local function RenderHistoryView(frame)
         local pass = true
         local b = GetMatchBracket(m)
 
-        if historyFilter ~= "ALL" then
-            if historyFilter == "Shuffle" then
+        --Bracket
+        if historyFilters.bracket ~= "ALL" then
+            if historyFilters.bracket == "Shuffle" then
                 if not (b == "Shuffle" or b == "Solo Shuffle" or not m.bracket) then
                     pass = false
                 end
-            elseif historyFilter == "Blitz" then
+            elseif historyFilters.bracket == "Blitz" then
                 if not (b == "Blitz" or b == "Battleground Blitz") then
                     pass = false
                 end
-            elseif b ~= historyFilter then
+            elseif b ~= historyFilters.bracket then
                 pass = false
+            end
+        end
+
+        -- Result
+        if pass and historyFilters.result ~= "ALL" then
+            local outcome = GetMatchOutcome(m)
+            if historyFilters.result == "WINS"   and outcome ~= "W" then pass = false end
+            if historyFilters.result == "LOSSES" and outcome ~= "L" then pass = false end
+            if historyFilters.result == "DRAWS"  and outcome ~= "D" then pass = false end
+        end
+
+        -- Map
+        if pass and historyFilters.map ~= "ALL" then
+            local mapName = m.map or m.mapName or ""
+            if mapName ~= historyFilters.map then
+                pass = false
+            end
+        end
+
+                -- Date
+        if pass and historyFilters.date ~= "ALL" then
+            local window = DATE_CUTOFFS[historyFilters.date]
+            if window then
+                local cutoff = time() - window
+                if (m.timestamp or 0) < cutoff then
+                    pass = false
+                end
+            end
+        end
+
+        -- Season
+        if pass and historyFilters.season ~= "ALL" then
+            local currentId = ns.currentSeasonId
+            local lastId    = AlterArenaDB.lastSeasonId
+
+            if historyFilters.season == "CURRENT" then
+                -- If we don't know the current season, show nothing for this filter
+                if not currentId or m.seasonId ~= currentId then
+                    pass = false
+                end
+            elseif historyFilters.season == "LAST" then
+                if not lastId or m.seasonId ~= lastId then
+                    pass = false
+                end
             end
         end
 

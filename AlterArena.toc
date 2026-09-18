@@ -10,4 +10,5 @@
 Core.lua
 MatchTracker.lua
 QueueTimer.lua
+Dropdowns.lua
 UI.lua

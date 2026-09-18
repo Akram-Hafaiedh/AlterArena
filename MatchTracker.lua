@@ -20,6 +20,28 @@ local function EnsurePVPInfo()
     end
 end
 
+-- Returns the current PvP season number, or nil if the API isn't available.
+-- Used to tag each match so we can filter by season later.
+local function GetCurrentSeasonId()
+    -- Retail 10.x / 11.x: C_Seasons API
+    if C_Seasons and C_Seasons.GetActiveSeason then
+        local ok, seasonID = pcall(C_Seasons.GetActiveSeason)
+        if ok and seasonID and type(seasonID) == "number" then
+            return seasonID
+        end
+    end
+    -- Legacy fallback (still present in some builds)
+    if GetCurrentArenaSeason then
+        local ok, n = pcall(GetCurrentArenaSeason)
+        if ok and n and type(n) == "number" then
+            return n
+        end
+    end
+    return nil
+end
+
+ns.GetCurrentSeasonId = GetCurrentSeasonId
+
 local function GetBracketName(bracketIndex)
     if CONQUEST_SIZE_STRINGS and CONQUEST_BRACKET_INDEXES then
         for i, idx in pairs(CONQUEST_BRACKET_INDEXES) do
@@ -667,6 +689,7 @@ local function OnMatchComplete()
         roundsWon = roundsWonDelta,
         roundsPlayed = roundsPlayedDelta,
         rounds = pendingMatch.rounds,
+        seasonId = GetCurrentSeasonId(),
     }
 
     -- Request server scoreboard data
