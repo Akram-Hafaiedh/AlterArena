@@ -107,11 +107,13 @@ function ns.EnsurePlayerRecord()
             faction = faction,
             matches = {},
             bracketRatings = {},
+            peaks = {},
         }
     end
 
     local rec = players[key]
     rec.bracketRatings = rec.bracketRatings or {}
+    rec.peaks = rec.peaks or {}
 
     -- Keep spec and specIcon updated for current character
     if GetSpecialization and GetSpecializationInfo then
@@ -124,6 +126,24 @@ function ns.EnsurePlayerRecord()
     end
 
     return rec
+end
+
+-- Records a new peak for a bracket key if the current rating exceeds the
+-- stored peak. Peaks live outside bracketRatings so they survive cache
+-- migrations and /aa reset.
+function ns.UpdatePeak(rec, key, rating)
+    if not rec or not key or not rating or rating <= 0 then return end
+    rec.peaks = rec.peaks or {}
+    local p = rec.peaks[key]
+    if not p or rating > (p.rating or 0) then
+        rec.peaks[key] = { rating = rating, timestamp = time() }
+    end
+end
+
+function ns.GetPeak(rec, key)
+    if not rec or not rec.peaks or not key then return nil end
+    local p = rec.peaks[key]
+    return p and p.rating or nil
 end
 
 function ns.RequestPVPStats()
@@ -409,6 +429,12 @@ function ns.UpdateAllCharacterRatings()
         local rPlayed = roundsSeasonPlayed or 0
         local rWon = roundsSeasonWon or 0
         local hasLiveData = (r > 0) or (sPlayed > 0) or (rPlayed > 0)
+        if r > 0 then
+            ns.UpdatePeak(rec, b.name, r)
+            if b.isSpecSpecific and curSpec then
+                ns.UpdatePeak(rec, b.name .. "-" .. curSpec, r)
+            end
+        end
         if not hasLiveData then
             rec.bracketRatings[b.name] = nil
             if b.isSpecSpecific and curSpec then

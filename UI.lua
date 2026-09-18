@@ -3,6 +3,8 @@ local ADDON_NAME, ns = ...
 local mainFrame
 local activeTab = "roster" -- "roster" or "history"
 local historyFilter = "ALL" -- "ALL", "Shuffle", "Blitz", "2v2", "3v3"
+local rosterSortMode = "name" -- "name", "rating", "recent", "winrate"
+
 local selectedCharKey = nil
 local selectedMatches = {}
 local sessionStartTime = time()
@@ -10,6 +12,16 @@ local sessionStartTime = time()
 local ROW_HEIGHT = 28
 local FRAME_WIDTH = 960
 local FRAME_HEIGHT = 540
+
+local function GetPvPTierName(rating)
+    if not rating or rating <= 0   then return nil          end
+    if rating >= 2400              then return "Elite"      end
+    if rating >= 2100              then return "Duelist"    end
+    if rating >= 1800              then return "Rival"      end
+    if rating >= 1600              then return "Challenger" end
+    if rating >= 1400              then return "Combatant"  end
+    return nil
+end
 
 -- Class colors helper
 local function GetClassColor(classFilename)
@@ -19,12 +31,67 @@ local function GetClassColor(classFilename)
     return { r = 0.8, g = 0.8, b = 0.8, colorStr = "ffcccccc" }
 end
 
-local function GetSortedCharacterKeys()
+local function getBestRating(rec)
+    local best = 0
+    if rec and rec.bracketRatings then
+        for _, bData in pairs(rec.bracketRatings) do
+            if bData.current and bData.current > best then
+                best = bData.current
+            end
+        end
+    end
+    return best
+end
+
+local function GetLastMatchTime(rec)
+    if rec and rec.matches and #rec.matches > 0 then
+        return rec.matches[#rec.matches].timestamp or 0
+    end
+    return 0
+end
+
+local function GetWinRate(rec)
+    local w, l = 0, 0
+    if rec and rec.matches then
+        for _, m in ipairs(rec.matches) do
+            if m.won == true then w = w + 1
+            elseif m.won == false then l = l + 1 end
+        end
+    end
+    local total = w + l
+    if total == 0 then return -1 end
+    return w / total
+end
+
+local function GetSortedCharacterKeys(sortMode)
     local keys = {}
     for key in pairs(AlterArenaDB.players or {}) do
         table.insert(keys, key)
     end
-    table.sort(keys)
+
+    sortMode = sortMode or rosterSortMode or "name"
+    if sortMode == "rating" then
+        table.sort(keys, function(a, b)
+            local ra, rb = getBestRating(AlterArenaDB.players[a]), getBestRating(AlterArenaDB.players[b])
+            if ra == rb then return a < b end
+            return ra > rb
+        end)
+    elseif sortMode == "recent" then
+        table.sort(keys, function(a, b)
+            local ta, tb = GetLastMatchTime(AlterArenaDB.players[a]), GetLastMatchTime(AlterArenaDB.players[b])
+            if ta == tb then return a < b end
+            return ta > tb
+        end)
+    elseif sortMode == "winrate" then
+        table.sort(keys, function(a, b)
+            local wa, wb = GetWinRate(AlterArenaDB.players[a]), GetWinRate(AlterArenaDB.players[b])
+            if wa == wb then return a < b end
+            return wa > wb
+        end)
+    else
+        table.sort(keys)
+    end
+    
     return keys
 end
 
@@ -434,6 +501,9 @@ local function ClearAllRows(frame)
     if frame.rosterRows then
         for _, row in ipairs(frame.rosterRows) do row:Hide() end
     end
+    if frame.rosterHeader then
+        frame.rosterHeader:Hide()
+    end
     if frame.historyRows then
         for _, row in ipairs(frame.historyRows) do row:Hide() end
     end
@@ -445,6 +515,9 @@ local function ClearAllRows(frame)
     end
     if frame.historyFooter then
         frame.historyFooter:Hide()
+    end
+    if frame.sortBar then
+        frame.sortBar:Hide()
     end
     if frame.settingsPanel then
         frame.settingsPanel:Hide()
@@ -575,17 +648,59 @@ local function RenderRosterView(frame)
         card:Show()
     end
 
+    -- Sort bar
     statY = statY - 54
+
+    local sortBar = frame.sortBar
+    if not sortBar then
+        sortBar = CreateFrame("Frame", nil, frame.content)
+        sortBar:SetSize(FRAME_WIDTH - 52, 24)
+        frame.sortBar = sortBar
+
+        local lbl = sortBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        lbl:SetPoint("LEFT", 0, 0)
+        lbl:SetText("|cff888899Sort:|r")
+
+        local options = {
+            { id = "name",    text = "Name" },
+            { id = "rating",  text = "Highest Rating" },
+            { id = "recent",  text = "Recent" },
+            { id = "winrate", text = "Win Rate" },
+        }
+
+        local prev = lbl
+        frame.sortButtons = {}
+        for _, opt in ipairs(options) do
+            local btn = CreateStyledButton(sortBar, opt.text, 100, 20)
+            btn:SetPoint("LEFT", prev, "RIGHT", 6, 0)
+            btn.sortId = opt.id
+            btn:SetScript("OnClick", function(self)
+                rosterSortMode = self.sortId
+                ns.RefreshUI()
+            end)
+            frame.sortButtons[opt.id] = btn
+            prev = btn
+        end
+    end
+    sortBar:SetPoint("TOPLEFT", 2, statY)
+    sortBar:Show()
+
+    for id, btn in pairs(frame.sortButtons) do
+        SetTabActive(btn, id == rosterSortMode)
+    end
+
+    statY = statY - 30
 
     -- Table Columns Header
     local cols = {
-        { title = "Character", width = 145 },
-        { title = "Spec / Class", width = 135 },
-        { title = "Shuffle", width = 100, align = "CENTER" },
-        { title = "Blitz", width = 85, align = "CENTER" },
-        { title = "2v2", width = 70, align = "CENTER" },
-        { title = "3v3", width = 70, align = "CENTER" },
-        { title = "W - L (Win %)", width = 145, align = "RIGHT" },
+        { title = "Character",    width = 130 },
+        { title = "Spec / Class", width = 120 },
+        { title = "Best Tier",    width = 110, align = "CENTER" },
+        { title = "Shuffle",      width = 95,  align = "CENTER" },
+        { title = "Blitz",        width = 85,  align = "CENTER" },
+        { title = "2v2",          width = 70,  align = "CENTER" },
+        { title = "3v3",          width = 70,  align = "CENTER" },
+        { title = "W - L (Win %)",width = 135, align = "RIGHT" },
     }
 
     local header = frame.rosterHeader
@@ -624,13 +739,62 @@ local function RenderRosterView(frame)
                     1, 1, 1, 1, 1, 1
                 )
 
+                -- Best overall tier
+                local bestRating, bestBracket = 0, nil
+                if pRec.bracketRatings then
+                    for bName, bData in pairs(pRec.bracketRatings) do
+                        if bData.current and bData.current > bestRating then
+                            bestRating = bData.current
+                            bestBracket = bName
+                        end
+                    end
+                end
+                if bestRating > 0 then
+                    local col = GetRatingColor(bestRating)
+                    local tier = GetPvPTierName(bestRating) or "Unranked"
+                    GameTooltip:AddDoubleLine(
+                        string.format("|cff888899Best:|r |c%s%d|r |cff888899%s|r", col, bestRating, bestBracket or ""),
+                        string.format("|c%s%s|r", col, tier)
+                    )
+                else
+                    GameTooltip:AddLine("|cff888899Unranked — no rated matches recorded.|r")
+                end
+
+                -- Per-bracket breakdown
+                local brackets = { "Shuffle", "Blitz", "2v2", "3v3" }
+                local anyBracket = false
+                for _, bName in ipairs(brackets) do
+                    local cur = pRec.bracketRatings and pRec.bracketRatings[bName]
+                    local peak = ns.GetPeak and ns.GetPeak(pRec, bName)
+                    local curRating = cur and cur.current or 0
+                    if curRating > 0 or (peak and peak > 0) then
+                        if not anyBracket then
+                            GameTooltip:AddLine(" ")
+                            anyBracket = true
+                        end
+                        local col = GetRatingColor(curRating)
+                        local tier = GetPvPTierName(curRating) or "—"
+                        local peakStr = (peak and peak > curRating)
+                            and string.format("  |cff666677peak %d|r", peak)
+                            or ""
+                        GameTooltip:AddDoubleLine(
+                            string.format("|cffffffff%s|r", bName),
+                            string.format("|c%s%s|r |cff888899%s|r%s", col, tostring(curRating), tier, peakStr)
+                        )
+                    end
+                end
+
+                -- Spec breakdown for Solo Shuffle
                 if pRec.specStats and next(pRec.specStats) then
                     GameTooltip:AddLine(" ")
-                    GameTooltip:AddLine("|cffffd100Solo Shuffle Specializations:|r")
+                    GameTooltip:AddLine("|cffffd100Solo Shuffle — by spec:|r")
                     for sName, sData in pairs(pRec.specStats) do
                         local iconPrefix = sData.icon and string.format("|T%s:14:14:0:0|t ", sData.icon) or ""
                         local col, rStr = GetRatingColor(sData.rating or 0)
-                        local mmrStr = sData.mmr and string.format(" |cff38bdf8(MMR: %d)|r", sData.mmr) or ""
+                        local peak = ns.GetPeak and ns.GetPeak(pRec, "Shuffle-" .. sName)
+                        local peakStr = (peak and peak > (sData.rating or 0))
+                            and string.format("  |cff666677peak %d|r", peak)
+                            or ""
                         local w = sData.roundsWon or 0
                         local l = sData.roundsLost or 0
                         local pct = sData.winRate or 0
@@ -638,7 +802,8 @@ local function RenderRosterView(frame)
 
                         GameTooltip:AddDoubleLine(
                             string.format("%s|cffffffff%s|r", iconPrefix, sName),
-                            string.format("|c%s%s|r%s  |cff22c55e%d|r-|cffef4444%d|r (|cff%s%.1f%%|r)", col, rStr, mmrStr, w, l, pctCol, pct)
+                            string.format("|c%s%s|r%s  |cff22c55e%d|r-|cffef4444%d|r (|cff%s%.0f%%|r)",
+                                col, rStr, peakStr, w, l, pctCol, pct)
                         )
                     end
                 end
@@ -659,17 +824,23 @@ local function RenderRosterView(frame)
 
             row.charText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             row.charText:SetPoint("LEFT", 10, 0)
-            row.charText:SetWidth(145)
+            row.charText:SetWidth(130)
             row.charText:SetJustifyH("LEFT")
 
             row.specText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             row.specText:SetPoint("LEFT", row.charText, "RIGHT", 6, 0)
-            row.specText:SetWidth(135)
+            row.specText:SetWidth(120)
             row.specText:SetJustifyH("LEFT")
 
+            row.bestText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.bestText:SetPoint("LEFT", row.specText, "RIGHT", 6, 0)
+            row.bestText:SetWidth(110)
+            row.bestText:SetJustifyH("CENTER")
+
+
             row.shuffleText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.shuffleText:SetPoint("LEFT", row.specText, "RIGHT", 6, 0)
-            row.shuffleText:SetWidth(100)
+            row.shuffleText:SetPoint("LEFT", row.bestText, "RIGHT", 6, 0)
+            row.shuffleText:SetWidth(95)
             row.shuffleText:SetJustifyH("CENTER")
 
             row.blitzText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -689,7 +860,7 @@ local function RenderRosterView(frame)
 
             row.recordText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             row.recordText:SetPoint("LEFT", row.threeText, "RIGHT", 6, 0)
-            row.recordText:SetWidth(145)
+            row.recordText:SetWidth(135)
             row.recordText:SetJustifyH("RIGHT")
 
             frame.rosterRows[index] = row
@@ -785,6 +956,27 @@ local function RenderRosterView(frame)
         end
         row.specText:SetText(specDisplay)
 
+        -- Best Tier column
+        local bestRating = 0
+        local bestBracket = nil
+        if rec.bracketRatings then
+            for bName, bData in pairs(rec.bracketRatings) do
+                if bData.current and bData.current > bestRating then
+                    bestRating = bData.current
+                    bestBracket = bName
+                end
+            end
+        end
+
+        if bestRating > 0 then
+            local col = GetRatingColor(bestRating)
+            local tier = GetPvPTierName(bestRating)
+            local tierStr = tier and string.format(" |c%s%s|r", col, tier) or ""
+            row.bestText:SetText(string.format("|c%s%d|r%s", col, bestRating, tierStr))
+        else
+            row.bestText:SetText("|cff777788---|r")
+        end
+
         local shuffleData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "Shuffle", specName)
         local blitzData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "Blitz", specName)
         local twoData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "2v2")
@@ -844,6 +1036,7 @@ local function RenderRosterView(frame)
                         subSpecDisplay = string.format("|cffcccccc%s|r", sName)
                     end
                     subRow.specText:SetText(subSpecDisplay)
+                    subRow.bestText:SetText("|cff555566---|r")
 
                     local subShuffleData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "Shuffle", sName) or sData
                     subRow.shuffleText:SetText(FormatRatingWithDelta(subShuffleData))
@@ -871,6 +1064,7 @@ end
 -- Renders the AlterEgo-style Detailed Match History Ledger
 local function RenderHistoryView(frame)
     if frame.rosterHeader then frame.rosterHeader:Hide() end
+    if frame.sortBar then frame.sortBar:Hide() end
     frame.filterBar:Show()
     SetTabActive(frame.tabRoster, false)
     SetTabActive(frame.tabHistory, true)
@@ -1452,6 +1646,7 @@ local function RenderSettingsView(frame)
     if frame.filterBar then frame.filterBar:Hide() end
     if frame.historyFooter then frame.historyFooter:Hide() end
     if frame.emptyHistoryMsg then frame.emptyHistoryMsg:Hide() end
+    if frame.sortBar then frame.sortBar:Hide() end
     frame.scrollFrame:SetPoint("BOTTOMRIGHT", -32, 14)
 
     SetTabActive(frame.tabRoster, false)
