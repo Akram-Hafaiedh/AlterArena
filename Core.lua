@@ -409,20 +409,13 @@ function ns.UpdateAllCharacterRatings()
 
     local brackets = {
         { name = "Shuffle", idx = shuffleIdx, isSpecSpecific = true },
-        { name = "Blitz", idx = blitzIdx, fallbackIdx = 8, isSpecSpecific = false },
+        { name = "Blitz", idx = blitzIdx, isSpecSpecific = false },
         { name = "2v2", idx = 1, isSpecSpecific = false },
         { name = "3v3", idx = 2, isSpecSpecific = false },
     }
 
     for _, b in ipairs(brackets) do
         local rating, _, _, seasonPlayed, seasonWon, _, _, _, _, _, _, roundsSeasonPlayed, roundsSeasonWon = GetPersonalRatedInfo(b.idx)
-        if b.fallbackIdx and (not rating or rating <= 0) and (not seasonPlayed or seasonPlayed == 0) then
-            local rF, _, _, spF, swF = GetPersonalRatedInfo(b.fallbackIdx)
-            if (rF and rF > 0) or (spF and spF > 0) then
-                rating, seasonPlayed, seasonWon = rF, spF, swF
-            end
-        end
-
         local r = rating or 0
         local sWon = seasonWon or 0
         local sPlayed = seasonPlayed or 0

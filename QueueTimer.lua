@@ -163,7 +163,7 @@ local function GetBracketRating(bracketName)
                 end
             end
         elseif bracketName == "Blitz" then
-            for _, testIdx in ipairs({ 9, 8 }) do
+            for _, testIdx in ipairs({ 9 }) do
                 local r = GetPersonalRatedInfo(testIdx)
                 if r and r > 0 then
                     rating = r
