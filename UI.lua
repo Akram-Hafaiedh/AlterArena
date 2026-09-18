@@ -624,14 +624,60 @@ local function CreateMainFrame()
     -- Bracket filters container for Match History
     local filterBar = CreateFrame("Frame", nil, navBar)
     filterBar:SetPoint("RIGHT", 0, 0)
-    filterBar:SetSize(310, 26)
+    filterBar:SetSize(346, 26)
     frame.filterBar = filterBar
 
-        -- Bracket dropdown + Clear button
-    filterBar:SetSize(212, 26)
+    -- Character picker
+    local charBtn = CreateStyledButton(filterBar, "Character", 130, 26)
+    charBtn:SetPoint("LEFT", 0, 0)
+    charBtn:SetScript("OnClick", function(self)
+        local items = {}
+        local currentKey = ns.GetPlayerKey()
 
+        -- Pinned "This Character" Shortcut
+        table.insert(items, {
+            type = "radio",
+            label = "This Character",
+            checked = function() return selectedCharKey == currentKey end,
+            onClick = function()
+                selectedCharKey = currentKey
+                ns.RefreshUI()
+            end,
+        })
+        -- Space
+        table.insert(items, { type = "divider" })
+
+        -- Every tracked character, alphabetical
+        local keys = {}
+        for key in pairs(AlterArenaDB.players or {}) do
+            table.insert(keys, key)
+        end
+        table.sort(keys)
+
+        for _, key in ipairs(keys) do
+            local rec = AlterArenaDB.players[key]
+            local name = (rec and rec.name) or key
+            local count = (rec and rec.matches and #rec.matches) or 0
+            local c = GetClassColor(rec and rec.class)
+            local label = string.format("|c%s%s|r |cff666677(%d)|r", c.colorStr or "ffffffff", name, count)
+            
+            table.insert(items, {
+                type  = "radio",
+                label = label,
+                checked = function() return selectedCharKey == key end,
+                onClick = function()
+                    selectedCharKey = key
+                    ns.RefreshUI()
+                end,
+            })
+        end
+        ns.OpenDropdown(self, items)
+    end)
+    frame.charBtn = charBtn
+
+    -- Bracket dropdown
     local bracketBtn = CreateStyledButton(filterBar, "Bracket", 140, 26)
-    bracketBtn:SetPoint("LEFT", 0, 0)
+    bracketBtn:SetPoint("LEFT", charBtn, "RIGHT", 6, 0)
     bracketBtn:SetScript("OnClick", function(self)
         local items = {}
         for _, id in ipairs({ "ALL", "Shuffle", "Blitz", "2v2", "3v3" }) do
@@ -650,9 +696,10 @@ local function CreateMainFrame()
     end)
     frame.bracketBtn = bracketBtn
 
-    local clearBtn = CreateStyledButton(filterBar, "Clear", 64, 26)
-    clearBtn:SetPoint("RIGHT", 0, 0)
-    clearBtn:SetScript("OnClick", function()
+    -- Clear button
+    local clearFiltersBtn = CreateStyledButton(filterBar, "Clear", 64, 26)
+    clearFiltersBtn:SetPoint("RIGHT", 0, 0)
+    clearFiltersBtn:SetScript("OnClick", function()
         historyFilters.bracket = "ALL"
         historyFilters.result  = "ALL"
         historyFilters.map     = "ALL"
@@ -660,11 +707,12 @@ local function CreateMainFrame()
         historyFilters.season  = "ALL"
         ns.RefreshUI()
     end)
-    clearBtn:Hide()
-    frame.clearFiltersBtn = clearBtn
+    clearFiltersBtn:Hide()
+    frame.clearFiltersBtn = clearFiltersBtn
 
-    local moreBtn = CreateStyledButton(navBar, "More Filters", 100, 26)
+    local moreBtn = CreateStyledButton(filterBar, "More Filters", 100, 26)
     moreBtn:SetPoint("RIGHT", filterBar, "LEFT", -8, 0)
+
     moreBtn:SetScript("OnClick", function(self)
         if ns.ShowMoreFilters then
             ns.ShowMoreFilters(self)
@@ -1363,7 +1411,28 @@ local function RenderHistoryView(frame)
     SetTabActive(frame.tabHistory, true)
     UpdateSettingsButtonState(frame)
 
-        -- Update bracket button label + Clear button visibility
+
+    -- Update Character button label
+    if frame.charBtn then
+        local effectiveKey = selectedCharKey or ns.GetPlayerKey()
+        local rec = AlterArenaDB.players[effectiveKey]
+        local name = (rec and rec.name) or effectiveKey or "Character"
+        local c = GetClassColor(rec and rec.class)
+        local isCurrent = (effectiveKey == ns.GetPlayerKey())
+
+        frame.charBtn.text:SetText(string.format("|c%s%s|r", c.colorStr or "ffffffff", name))
+
+        if isCurrent then
+            frame.charBtn:SetBackdropColor(0.12, 0.13, 0.16, 0.9)
+            frame.charBtn:SetBackdropBorderColor(0.22, 0.23, 0.28, 0.9)
+        else
+            -- Gold border when viewing another character
+            frame.charBtn:SetBackdropColor(0.20, 0.24, 0.32, 1)
+            frame.charBtn:SetBackdropBorderColor(0.8, 0.65, 0.2, 1)
+        end
+    end
+
+    -- Update bracket button label + Clear button visibility
     if frame.bracketBtn then
         local current = BRACKET_LABELS[historyFilters.bracket] or "Bracket"
         local active = (historyFilters.bracket ~= "ALL")
