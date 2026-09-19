@@ -1,0 +1,16 @@
+package-as: AlterArena
+enable-nolib-creation: no
+
+externals: {}
+
+ignore:
+  - "*.md"
+  - ".git/*"
+  - ".github/*"
+  - ".gitignore"
+  - "node_modules/*"
+  - "tests/*"
+  - "run-tests.bat"
+  - "package-lock.json"
+  - "package.json"
+  - "docs/*"

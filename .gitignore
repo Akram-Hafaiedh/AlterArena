@@ -1,2 +1,11 @@
 node_modules/
 package-lock.json
+
+# addon zip files
+*.zip
+!AlterArena.zip
+!AlterArena-*.zip
+
+# Packager output
+.packager/
+.release/
