@@ -47,8 +47,11 @@ local function GetBracketName(bracketIndex)
         for i, idx in pairs(CONQUEST_BRACKET_INDEXES) do
             if idx == bracketIndex and CONQUEST_SIZE_STRINGS[i] then
                 local str = CONQUEST_SIZE_STRINGS[i]
-                if string.find(str, "Shuffle") then return "Solo Shuffle" end
-                if string.find(str, "Blitz") then return "Blitz" end
+                local lower = string.lower(str or "")
+                -- Blizzard has shipped the shuffle bracket under several names
+                -- across patches: "Solo Shuffle", "Solo", "Rated Solo Shuffle".
+                if string.find(lower, "shuffle") or lower == "solo" then return "Solo Shuffle" end
+                if string.find(lower, "blitz") then return "Blitz" end
                 return str
             end
         end
@@ -406,6 +409,51 @@ local function OnMatchStart()
                         if specIcon and #pendingMatch.currentRound.enemy < 3 then
                             table.insert(pendingMatch.currentRound.enemy, specIcon)
                         end
+                    end
+                end
+            end
+        end
+    end)
+
+    -- Capture teammate specs a bit later than the enemy capture, so the
+    -- inspect cache has time to populate. Only runs in Solo Shuffle —
+    -- in 2v2/3v3 the team is set once at match start and doesn't rotate.
+    C_Timer.After(3.5, function()
+        if not pendingMatch or not pendingMatch.currentRound then return end
+        if pendingMatch.currentRound.round ~= rIdx then return end
+        if pendingMatch.currentRound.teamCaptured then return end
+        pendingMatch.currentRound.teamCaptured = true
+
+        local round = pendingMatch.currentRound
+
+        -- Track who we've already accounted for: the player + all enemies.
+        local known = { [UnitGUID("player")] = true }
+        local numOpp = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
+        for j = 1, numOpp do
+            local g = UnitGUID("arena" .. j)
+            if g then known[g] = true end
+        end
+
+        -- Anyone else in our group is a teammate for this round.
+        local numGroup = (GetNumGroupMembers and GetNumGroupMembers()) or 0
+        for i = 1, numGroup do
+            local unit = "raid" .. i
+            if UnitExists(unit) then
+                local g = UnitGUID(unit)
+                if g and not known[g] then
+                    known[g] = true
+
+                    local icon = nil
+                    if GetInspectSpecialization and GetSpecializationInfoByID then
+                        local specID = GetInspectSpecialization(unit)
+                        if specID and specID > 0 then
+                            local _, _, _, sIcon = GetSpecializationInfoByID(specID)
+                            icon = sIcon
+                        end
+                    end
+
+                    if icon then
+                        table.insert(round.team, icon)
                     end
                 end
             end

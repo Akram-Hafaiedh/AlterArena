@@ -173,6 +173,27 @@ local function GetVisibleColumns()
     return out
 end
 
+-- Repositions every FontString on a history row using the current column
+-- widths. Call this after `cols` has been stretched.
+local function PositionHistoryRow(row, cols)
+    if not row or not cols then return end
+    local prev = nil
+    for i, col in ipairs(cols) do
+        local fs = row.textFields and row.textFields[i]
+        if fs then
+            fs:ClearAllPoints()
+            if prev then
+                fs:SetPoint("LEFT", prev, "RIGHT", col.gap or 4, 0)
+            else
+                fs:SetPoint("LEFT", row, "LEFT", 10, 0)
+            end
+            fs:SetWidth(col.width)
+            fs:SetJustifyH(col.align or "LEFT")
+            prev = fs
+        end
+    end
+end
+
 
 -- Repositions every FontString on a roster row to reflect current column
 -- visibility. Call before showing the row.
@@ -337,11 +358,10 @@ local function GetRatingColor(rating)
 end
 
 local function GetMatchBracket(m)
-    if m.bracket and m.bracket ~= "" then
-        return m.bracket
-    end
-    -- Fallback for matches recorded before bracket naming was captured
-    return "Solo Shuffle"
+    local b = m and m.bracket
+    if b == nil or b == "" then return "Solo Shuffle" end
+    if b == "Solo" then return "Solo Shuffle" end
+    return b
 end
 
 local function GetMatchOutcome(m)
@@ -1693,10 +1713,17 @@ local function RenderHistoryView(frame)
                        or (historyFilters.map     ~= "ALL")
                        or (historyFilters.season  ~= "ALL")
                        or (historyFilters.date    ~= "ALL")
+        frame.clearFiltersBtn:Show()
         if anyActive then
-            frame.clearFiltersBtn:Show()
+            frame.clearFiltersBtn:SetAlpha(1)
+            frame.clearFiltersBtn:SetBackdropColor(0.12, 0.13, 0.16, 0.9)
+            frame.clearFiltersBtn:SetBackdropBorderColor(0.22, 0.23, 0.28, 0.9)
+            frame.clearFiltersBtn.text:SetText("|cffddddddClear|r")
         else
-            frame.clearFiltersBtn:Hide()
+            frame.clearFiltersBtn:SetAlpha(0.4)
+            frame.clearFiltersBtn:SetBackdropColor(0.09, 0.10, 0.12, 0.9)
+            frame.clearFiltersBtn:SetBackdropBorderColor(0.16, 0.17, 0.20, 0.9)
+            frame.clearFiltersBtn.text:SetText("|cff666677Clear|r")
         end
     end
 
@@ -1777,24 +1804,61 @@ local function RenderHistoryView(frame)
     end
 
     local cols = {
-        { title = "Date", width = 68, gap = 4 },
-        { title = "Outcome", width = 58, align = "CENTER", gap = 4 },
-        { title = "Bracket", width = 78, gap = 4 },
-        { title = "Team", width = 45, align = "CENTER", gap = 4 },
-        { title = "Enemy Team", width = 115, align = "CENTER", gap = 4 },
-        { title = "Rating & Delta", width = 115, gap = 4 },
-        { title = "MMR", width = 50, align = "CENTER", gap = 4 },
-        { title = "Enemy MMR", width = 70, align = "CENTER", gap = 4 },
-        { title = "Map", width = 115, gap = 4 },
-        { title = "Duration", width = 65, align = "CENTER", gap = 4 },
-        { title = "Queue", width = 60, align = "CENTER", gap = 4 },
+        { title = "Date",          width = 72,  gap = 4, stretch = false },
+        { title = "Outcome",       width = 62,  align = "CENTER", gap = 4, stretch = false },
+        { title = "Bracket",       width = 85,  gap = 4 },
+        { title = "Team",          width = 55,  align = "CENTER", gap = 4, stretch = false },
+        { title = "Enemy Team",    width = 140, align = "CENTER", gap = 4 },
+        { title = "Rating & Delta",width = 120, gap = 4 },
+        { title = "MMR",           width = 55,  align = "CENTER", gap = 4, stretch = false },
+        { title = "Enemy MMR",     width = 75,  align = "CENTER", gap = 4, stretch = false },
+        { title = "Map",           width = 145, gap = 4 },
+        { title = "Duration",      width = 70,  align = "CENTER", gap = 4, stretch = false },
+        { title = "Queue",         width = 65,  align = "CENTER", gap = 4, stretch = false },
     }
+
+    -- Stretch the column widths so they fill the current frame width.
+    -- The frame itself stays where it is; only the table adapts.
+    local frameInner = frame:GetWidth() - 50      -- matches the scroll frame's usable area
+    local baseWidth = 0
+    local gapTotal  = 0
+    for i, c in ipairs(cols) do
+        baseWidth = baseWidth + c.width
+        if i < #cols then
+            gapTotal = gapTotal + (c.gap or 6)
+        end
+    end
+    -- Total slack we need to distribute across flexible columns
+    local slack = frameInner - (baseWidth + gapTotal + 20)
+    if slack > 0 then
+        -- Columns with stretch=false keep their size; the rest share slack
+        local flexCount = 0
+        for _, c in ipairs(cols) do
+            if c.stretch ~= false then flexCount = flexCount + 1 end
+        end
+        if flexCount > 0 then
+            local perCol = math.floor(slack / flexCount)
+            local remainder = slack - perCol * flexCount
+            for _, c in ipairs(cols) do
+                if c.stretch ~= false then
+                    c.width = c.width + perCol
+                    if remainder > 0 then
+                        c.width = c.width + 1
+                        remainder = remainder - 1
+                    end
+                end
+            end
+        end
+    end
+
+    local historyContentWidth = frameInner
 
     local header = frame.historyHeader
     if not header then
         header = CreateHeaderRow(frame.content, cols)
         frame.historyHeader = header
     end
+    header:SetWidth((frame:GetWidth() or FRAME_WIDTH) - 52)
     header:SetPoint("TOPLEFT", 2, 0)
     header:Show()
 
@@ -1944,7 +2008,7 @@ local function RenderHistoryView(frame)
         local row = frame.historyRows[index]
         if not row then
             row = CreateFrame("Button", nil, frame.content, "BackdropTemplate")
-            row:SetSize(FRAME_WIDTH - 52, ROW_HEIGHT)
+            row:SetSize((frame:GetWidth() or FRAME_WIDTH) - 52, ROW_HEIGHT)
             row:SetBackdrop({
                 bgFile = "Interface/Buttons/WHITE8X8",
                 edgeFile = "Interface/Buttons/WHITE8X8",
@@ -1971,7 +2035,7 @@ local function RenderHistoryView(frame)
                 GameTooltip:ClearLines()
 
                 local bName = match.bracket or "Solo Shuffle"
-                local isShuffle = (bName == "Solo Shuffle" or bName == "Shuffle")
+                local isShuffle = (bName == "Solo Shuffle" or bName == "Shuffle" or bName == "Solo")
 
                 if isShuffle and match.roundsWon ~= nil then
                     local wCol = match.roundsWon >= 4 and "22c55e" or (match.roundsWon == 3 and "ffd100" or "ef4444")
@@ -1989,16 +2053,16 @@ local function RenderHistoryView(frame)
                 if match.rounds and #match.rounds > 0 then
                     GameTooltip:AddLine(" ")
                     for rNum, rData in ipairs(match.rounds) do
-                        local teamIcons = ""
+                                                local teamIcons = ""
                         if rData.team then
                             for _, ic in ipairs(rData.team) do
-                                teamIcons = teamIcons .. string.format("|T%s:16:16:0:0|t ", ic)
+                                teamIcons = teamIcons .. string.format("|T%s:20:20:0:0|t ", ic)
                             end
                         end
                         local enemyIcons = ""
                         if rData.enemy then
                             for _, ic in ipairs(rData.enemy) do
-                                enemyIcons = enemyIcons .. string.format("|T%s:16:16:0:0|t ", ic)
+                                enemyIcons = enemyIcons .. string.format("|T%s:20:20:0:0|t ", ic)
                             end
                         end
 
@@ -2039,17 +2103,17 @@ local function RenderHistoryView(frame)
                     if match.team then
                         for _, member in ipairs(match.team) do
                             local ic = member.icon or match.specIcon
-                            if ic then teamStr = teamStr .. string.format("|T%s:14:14:0:0|t ", ic) end
+                            if ic then teamStr = teamStr .. string.format("|T%s:18:18:0:0|t ", ic) end
                         end
                     elseif match.specIcon then
-                        teamStr = string.format("|T%s:14:14:0:0|t", match.specIcon)
+                        teamStr = string.format("|T%s:18:18:0:0|t", match.specIcon)
                     end
                     GameTooltip:AddDoubleLine("|cff888899Your Team:|r", teamStr)
 
                     local enemyStr = ""
                     for _, member in ipairs(match.enemyTeam) do
                         local ic = member.icon or (member.spec and ns.GetSpecIcon and ns.GetSpecIcon(member.spec, member.class))
-                        if ic then enemyStr = enemyStr .. string.format("|T%s:14:14:0:0|t ", ic) end
+                        if ic then enemyStr = enemyStr .. string.format("|T%s:18:18:0:0|t ", ic) end
                     end
                     GameTooltip:AddDoubleLine("|cff888899Enemy Team:|r", enemyStr)
                 elseif match.roundsWon ~= nil then
@@ -2168,6 +2232,19 @@ local function RenderHistoryView(frame)
             row.durationText:SetJustifyH("CENTER")
 
             row.queueText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.textFields = {
+                row.dateText,
+                row.outcomeText,
+                row.bracketText,
+                row.teamText,
+                row.enemyTeamText,
+                row.ratingText,
+                row.mmrText,
+                row.enemyMMRText,
+                row.mapText,
+                row.durationText,
+                row.queueText,
+            }
             row.queueText:SetPoint("LEFT", row.durationText, "RIGHT", 4, 0)
             row.queueText:SetWidth(60)
             row.queueText:SetJustifyH("CENTER")
@@ -2183,6 +2260,7 @@ local function RenderHistoryView(frame)
 
         row.rowIndex = i
         row.matchData = m
+        PositionHistoryRow(row, cols)
         
         local isSelected = (selectedMatches[m] == true)
         if isSelected then
@@ -2225,11 +2303,11 @@ local function RenderHistoryView(frame)
             for _, member in ipairs(m.team) do
                 local ic = member.icon or m.specIcon
                 if ic then
-                    teamDisplay = teamDisplay .. string.format("|T%s:17:17:0:0|t ", ic)
+                    teamDisplay = teamDisplay .. string.format("|T%s:22:22:0:0|t ", ic)
                 end
             end
         elseif m.specIcon then
-            teamDisplay = string.format("|T%s:17:17:0:0|t", m.specIcon)
+            teamDisplay = string.format("|T%s:22:22:0:0|t", m.specIcon)
         else
             teamDisplay = "|cff555566---|r"
         end
@@ -2241,7 +2319,7 @@ local function RenderHistoryView(frame)
             for _, member in ipairs(m.enemyTeam) do
                 local ic = member.icon or (member.spec and ns.GetSpecIcon and ns.GetSpecIcon(member.spec, member.class))
                 if ic then
-                    enemyDisplay = enemyDisplay .. string.format("|T%s:16:16:0:0|t ", ic)
+                    enemyDisplay = enemyDisplay .. string.format("|T%s:22:22:0:0|t ", ic)
                 end
             end
         else
