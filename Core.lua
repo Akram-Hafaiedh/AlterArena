@@ -36,8 +36,19 @@ local DEFAULTS = {
     settings = {
         enableQueueTimer = true,
         debugMode = false,
+        disableCurrencyAlerts = false,
+        columns = {},
     },
     schemaVersion = 2,
+}
+
+-- =========================================================================
+-- Currency IDs (Retail). Extend this table to add new currencies.
+-- =========================================================================
+ns.CURRENCY = {
+    conquest = 1602,
+    honor    = 1792,   -- Current Honor currency (12.x)
+    tokens   = 2123,   -- Bloody Tokens (War Mode, 12.x)
 }
 
 local function EnsureDBDefaults()
@@ -55,6 +66,9 @@ local function EnsureDBDefaults()
     end
     if AlterArenaDB.settings.debugMode == nil then
         AlterArenaDB.settings.debugMode = false
+    end
+    if AlterArenaDB.settings.disableCurrencyAlerts == nil then
+        AlterArenaDB.settings.disableCurrencyAlerts = false
     end
 end
 
@@ -93,6 +107,46 @@ function ns.GetPlayerKey()
     local name = UnitName("player")
     local realm = GetRealmName()
     return string.format("%s-%s", name, realm)
+end
+
+-- Returns a snapshot of the current character's tracked currencies.
+-- Safe to call anywhere: returns nil if the API isn't available, and
+-- silently skips any currency the client doesn't recognise.
+function ns.GetCurrencySnapshot()
+    if not C_CurrencyInfo or not C_CurrencyInfo.GetCurrencyInfo then return nil end
+    local snap = {}
+    for key, id in pairs(ns.CURRENCY) do
+        local ok, info = pcall(C_CurrencyInfo.GetCurrencyInfo, id)
+        if ok and info and (info.quantity ~= nil or info.iconFileID) then
+            snap[key] = {
+                amount = info.quantity or 0,
+                max    = info.maxQuantity or 0,
+                totalEarned = info.totalEarned or 0,
+                name   = info.name,
+                icon   = info.iconFileID,
+            }
+        end
+    end
+    return snap
+end
+
+-- Refreshes the currency cache on the current character's record.
+-- Called on load and after any PvP rating stats update (which also fires
+-- when currencies change).
+function ns.RefreshPlayerCurrency()
+    local rec = ns.EnsurePlayerRecord()
+    local snap = ns.GetCurrencySnapshot()
+    if not snap or not next(snap) then return end
+    rec.currency = rec.currency or {}
+    local now = time()
+    for key, data in pairs(snap) do
+        rec.currency[key] = {
+            amount  = data.amount,
+            max     = data.max,
+            totalEarned = data.totalEarned,
+            updated = now,
+        }
+    end
 end
 
 -- rating model: bracketRatings and specStats are treated as a *cache* rebuilt from
@@ -139,6 +193,7 @@ function ns.EnsurePlayerRecord()
             matches = {},
             bracketRatings = {},
             peaks = {},
+            currency = {},
         }
     end
 
@@ -589,6 +644,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         EnsureDBDefaults()
         ns.RefreshCurrentSeason()
+        ns.RefreshPlayerCurrency()
+        ns.CheckCurrencyAlerts()
         ns.EnsurePlayerRecord()
 
         if ns.InitMatchTracker then
@@ -616,6 +673,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     elseif event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_SPECIALIZATION_CHANGED" or event == "PVP_RATED_STATS_UPDATE" then
         if AlterArenaDB and AlterArenaDB.players then
             ns.RefreshCurrentSeason()
+            ns.RefreshPlayerCurrency()
+            ns.CheckCurrencyAlerts()
             ns.EnsurePlayerRecord()
             ns.RequestPVPStats()
             ns.SanitizeAllPlayerRecords()
@@ -638,6 +697,15 @@ SlashCmdList["ALTERARENA"] = function(msg)
         if ns.ToggleTestQueueTimer then
             ns.ToggleTestQueueTimer()
         end
+    elseif msg == "alerts" then
+        if AlterArenaDB and AlterArenaDB.settings then
+            AlterArenaDB.settings.disableCurrencyAlerts = not AlterArenaDB.settings.disableCurrencyAlerts
+            local statusStr = AlterArenaDB.settings.disableCurrencyAlerts and "|cffef4444DISABLED|r" or "|cff22c55eENABLED|r"
+            print(string.format("|cff40c0ffAlterArena|r: Currency alerts %s.", statusStr))
+        end
+
+    elseif msg == "alerttest" then
+        if ns.TestCurrencyAlert then ns.TestCurrencyAlert() end
     elseif msg == "ratings" or msg == "mmr" then
         if ns.PrintPvPRatings then
             ns.PrintPvPRatings()

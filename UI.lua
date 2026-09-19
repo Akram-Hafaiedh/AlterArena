@@ -5,7 +5,6 @@ local activeTab = "roster" -- "roster" or "history"
 local rosterSortMode = "name" -- "name", "rating", "recent", "winrate"
 
 
-
 -- Curated lists of rated-PvP maps. Names must match GetRealZoneText() output.
 -- If a name here doesn't match, that radio just yields zero results until
 -- the user plays on it and the dynamic discovery picks up the real string.
@@ -40,6 +39,35 @@ local KNOWN_BG_MAPS = {
     "Alterac Valley",
     "Seething Shore",
 }
+
+-- =========================================================================
+-- Roster column definitions
+-- =========================================================================
+-- Order here is the order they appear in the roster. Add new columns by
+-- inserting here; the header and rows build themselves from this list.
+-- "always" columns can't be hidden via the Columns dropdown.
+local COLUMN_DEFS = {
+    { id = "name",     title = "Character",     width = 115, align = "LEFT",   always = true, icon = "Interface\\Icons\\INV_Misc_Head_Human_01" },
+    { id = "spec",     title = "Spec / Class",  width = 105, align = "LEFT", icon = "Interface\\Icons\\INV_Misc_QuestionMark" },
+    { id = "best",     title = "Best Tier",     width = 95,  align = "CENTER" , icon = "Interface\\Icons\\achievement_pvp_a_01"},
+    { id = "shuffle",  title = "Shuffle",       width = 85,  align = "CENTER" , icon = "Interface\\Icons\\achievement_pvp_a_02"},
+    { id = "blitz",    title = "Blitz",         width = 80,  align = "CENTER", icon = "Interface\\Icons\\achievement_pvp_a_03" },
+    { id = "two",      title = "2v2",           width = 65,  align = "CENTER", icon = "Interface\\Icons\\achievement_pvp_a_04" },
+    { id = "three",    title = "3v3",           width = 65,  align = "CENTER", icon = "Interface\\Icons\\achievement_pvp_a_05" },
+    { id = "conquest", title = "Conquest",      width = 100, align = "CENTER", currencyKey = "conquest" },
+    { id = "honor",    title = "Honor",         width = 90,  align = "CENTER", currencyKey = "honor" },
+    { id = "tokens",   title = "Tokens",        width = 85,  align = "CENTER", currencyKey = "tokens" },
+    { id = "record",   title = "W - L (Win %)", width = 145, align = "RIGHT" ,  icon = "Interface\\Icons\\INV_Misc_Note_01" },
+}
+
+-- Which columns are visible on first run. Honor and Tokens default OFF
+-- so the initial roster isn't too crowded.
+local DEFAULT_COLUMNS = {
+    name = true, spec = true, best = true,
+    shuffle = true, blitz = true, two = true, three = true,
+    conquest = true, honor = false, tokens = false, record = true,
+}
+
 
 local selectedCharKey = nil
 local selectedMatches = {}
@@ -97,6 +125,98 @@ local DATE_CUTOFFS = {
 }
 
 
+-- Returns the icon markup string for a currency column, or "" if not found.
+-- Fetched lazily from C_CurrencyInfo so we always get the current client's
+-- texture IDs.
+local function GetColumnIconMarkup(def, size)
+    size = size or 12
+    if not def then return "" end
+
+    -- Currency-keyed icons come from the client at runtime
+    if def.currencyKey and C_CurrencyInfo and C_CurrencyInfo.GetCurrencyInfo then
+        local id = ns.CURRENCY and ns.CURRENCY[def.currencyKey]
+        if id then
+            local ok, info = pcall(C_CurrencyInfo.GetCurrencyInfo, id)
+            if ok and info and info.iconFileID then
+                return string.format("|T%s:%d:%d:0:0|t ", info.iconFileID, size, size)
+            end
+        end
+    end
+
+    -- Static icons
+    if def.icon then
+        return string.format("|T%s:%d:%d:0:0|t ", def.icon, size, size)
+    end
+
+    return ""
+end
+
+local function GetColumnVisibility()
+    AlterArenaDB = AlterArenaDB or {}
+    AlterArenaDB.settings = AlterArenaDB.settings or {}
+    AlterArenaDB.settings.columns = AlterArenaDB.settings.columns or {}
+    local cv = AlterArenaDB.settings.columns
+    for id, def in pairs(DEFAULT_COLUMNS) do
+        if cv[id] == nil then cv[id] = def end
+    end
+    return cv
+end
+
+local function GetVisibleColumns()
+    local cv = GetColumnVisibility()
+    local out = {}
+    for _, def in ipairs(COLUMN_DEFS) do
+        if def.always or cv[def.id] then
+            table.insert(out, def)
+        end
+    end
+    return out
+end
+
+
+-- Repositions every FontString on a roster row to reflect current column
+-- visibility. Call before showing the row.
+local function PositionRowColumns(row)
+    if not row or not row.texts then return end
+    local visible = GetVisibleColumns()
+    local prev = nil
+    for _, def in ipairs(visible) do
+        local fs = row.texts[def.id]
+        if fs then
+            fs:Show()
+            fs:ClearAllPoints()
+            if prev then
+                fs:SetPoint("LEFT", prev, "RIGHT", 6, 0)
+            else
+                fs:SetPoint("LEFT", row, "LEFT", 10, 0)
+            end
+            fs:SetWidth(def.width)
+            fs:SetJustifyH(def.align or "LEFT")
+            prev = fs
+        end
+    end
+    -- Hide any FontString not in the visible set
+    for _, def in ipairs(COLUMN_DEFS) do
+        local vis = false
+        for _, vdef in ipairs(visible) do
+            if vdef.id == def.id then vis = true; break end
+        end
+        local fs = row.texts[def.id]
+        if fs and not vis then fs:Hide() end
+    end
+end
+
+-- Returns the total pixel width needed to render the current set of
+-- visible columns, plus left/right padding.
+local function GetRequiredRosterWidth()
+    local visible = GetVisibleColumns()
+    local total = 10 + 20   -- left inset (10) + right slack (20)
+    for i, def in ipairs(visible) do
+        total = total + def.width
+        if i < #visible then total = total + 6 end  -- gap between columns
+    end
+    return total
+end
 
 local function GetPvPTierName(rating)
     if not rating or rating <= 0   then return nil          end
@@ -720,6 +840,30 @@ local function CreateMainFrame()
     end)
     frame.moreFiltersBtn = moreBtn
 
+    local columnsBtn = CreateStyledButton(navBar, "Columns", 90, 26)
+    columnsBtn:SetPoint("RIGHT", navBar, "RIGHT", 0, 0)
+    columnsBtn:SetScript("OnClick", function(self)
+        local cv = GetColumnVisibility()
+        local items = {}
+        for _, def in ipairs(COLUMN_DEFS) do
+            if not def.always then
+                local defId = def.id
+                local iconPrefix = GetColumnIconMarkup(def, 14) or ""
+                table.insert(items, {
+                    type  = "radio",
+                    label = iconPrefix .. def.title,
+                    checked = function() return cv[defId] == true end,
+                    onClick = function()
+                        cv[defId] = not cv[defId]
+                        ns.RefreshUI()
+                    end,
+                })
+            end
+        end
+        ns.OpenDropdown(self, items)
+    end)
+    frame.columnsBtn = columnsBtn
+
     frame.tabRoster:SetScript("OnClick", function()
         activeTab = "roster"
         ns.RefreshUI()
@@ -905,6 +1049,7 @@ end
 -- Renders the AlterEgo-style Alt Grid View
 local function RenderRosterView(frame)
     frame.filterBar:Hide()
+    if frame.columnsBtn then frame.columnsBtn:Show() end
     if frame.historyFooter then frame.historyFooter:Hide() end
     frame.scrollFrame:SetPoint("BOTTOMRIGHT", -32, 14)
     selectedMatch = nil
@@ -1032,25 +1177,80 @@ local function RenderRosterView(frame)
 
     statY = statY - 30
 
-    -- Table Columns Header
-    local cols = {
-        { title = "Character",    width = 130 },
-        { title = "Spec / Class", width = 120 },
-        { title = "Best Tier",    width = 110, align = "CENTER" },
-        { title = "Shuffle",      width = 95,  align = "CENTER" },
-        { title = "Blitz",        width = 85,  align = "CENTER" },
-        { title = "2v2",          width = 70,  align = "CENTER" },
-        { title = "3v3",          width = 70,  align = "CENTER" },
-        { title = "W - L (Win %)",width = 135, align = "RIGHT" },
-    }
-
+    -- Table Columns Header ( dynamic based on visible columns)
     local header = frame.rosterHeader
+
     if not header then
-        header = CreateHeaderRow(frame.content, cols)
+        header = CreateFrame("Frame", nil, frame.content, "BackdropTemplate")
+        header:SetSize(FRAME_WIDTH - 52, 22)
+        header:SetBackdrop({
+            bgFile = "Interface/Buttons/WHITE8X8",
+            edgeFile = "Interface/Buttons/WHITE8X8",
+            edgeSize = 1,
+        })
+        header:SetBackdropColor(0.10, 0.10, 0.13, 0.95)
+        header:SetBackdropBorderColor(0.18, 0.18, 0.22, 0.9)
         frame.rosterHeader = header
+        frame.rosterHeaderTexts = {}
     end
+
+    do
+        local prev = nil
+        local cursorX = 10
+        for i, def in ipairs(COLUMN_DEFS) do
+            local txt = frame.rosterHeaderTexts[i]
+            if not txt then
+                txt = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                frame.rosterHeaderTexts[i] = txt
+            end
+            local cv = GetColumnVisibility()
+            if def.always or cv[def.id] then
+                local iconPrefix = GetColumnIconMarkup(def, 12) or ""
+                txt:SetText(iconPrefix .. "|cff888899" .. def.title .. "|r")
+                txt:ClearAllPoints()
+                txt:SetPoint("LEFT", header, "LEFT", cursorX, 0)
+                txt:SetWidth(def.width)
+                txt:SetJustifyH(def.align or "LEFT")
+                txt:Show()
+                cursorX = cursorX + def.width + 6
+            else
+                txt:Hide()
+            end
+        end
+    end
+
     header:SetPoint("TOPLEFT", 2, statY)
     header:Show()
+    
+    -- Auto-widen the main frame if the visible columns need more room.
+    -- GetRequiredRosterWidth() returns the CONTENT width (columns + gaps +
+    -- padding). The frame itself needs ~50px extra for the scrollbar.
+    local contentWidth = GetRequiredRosterWidth()
+    frame.rosterContentWidth = contentWidth    -- so new rows can read it
+
+    local frameWidth = contentWidth + 50
+    local clampedFrameWidth = math.max(FRAME_WIDTH, math.min(frameWidth, 1400))
+
+    if frame:GetWidth() ~= clampedFrameWidth then
+        frame:SetWidth(clampedFrameWidth)
+    end
+
+    if frame.content then
+        frame.content:SetWidth(contentWidth)
+    end
+    if frame.rosterHeader then
+        frame.rosterHeader:SetWidth(contentWidth)
+    end
+    for _, row in ipairs(frame.rosterRows) do
+        row:SetWidth(contentWidth)
+    end
+
+    -- If the frame grew past the right edge, snap it back on-screen.
+    local right = frame:GetRight()
+    if right and right > (UIParent:GetWidth() - 20) then
+        frame:ClearAllPoints()
+        frame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -20, -60)
+    end
 
     local rowY = statY - 26
     local rowCounter = 0
@@ -1059,7 +1259,7 @@ local function RenderRosterView(frame)
         local row = frame.rosterRows[index]
         if not row then
             row = CreateFrame("Button", nil, frame.content, "BackdropTemplate")
-            row:SetSize(FRAME_WIDTH - 52, ROW_HEIGHT)
+            row:SetSize(frame.rosterContentWidth or (FRAME_WIDTH - 52), ROW_HEIGHT)
             row:SetBackdrop({
                 bgFile = "Interface/Buttons/WHITE8X8",
                 edgeFile = "Interface/Buttons/WHITE8X8",
@@ -1149,6 +1349,39 @@ local function RenderRosterView(frame)
                     end
                 end
 
+                -- Currency snapshot
+                if pRec.currency and next(pRec.currency) then
+                    GameTooltip:AddLine(" ")
+                    GameTooltip:AddLine("|cffffd100Currencies|r")
+
+                    local function CurrencyLine(key, label)
+                        local c = pRec.currency[key]
+                        if not c then return end
+                        local wallet = c.amount or 0
+                        local earned = c.totalEarned or wallet
+                        local cap    = c.max or 0
+                        local age = c.updated and (time() - c.updated) or nil
+                        local ageStr = ""
+                        if age then
+                            if age < 3600 then ageStr = string.format("|cff666677%dm|r", math.floor(age/60))
+                            elseif age < 86400 then ageStr = string.format("|cff666677%dh|r", math.floor(age/3600))
+                            else ageStr = string.format("|cff666677%dd|r", math.floor(age/86400)) end
+                        end
+
+                        local iconStr = GetColumnIconMarkup({ currencyKey = key }, 14)
+
+                        GameTooltip:AddDoubleLine(
+                            string.format("  %s%s", iconStr, label),
+                            string.format("|cffffffffTotal:|r %d   |cff888899Season:|r %d |cff666677/ %d|r   %s",
+                                wallet, earned, cap, ageStr)
+                        )
+                    end
+
+                    CurrencyLine("conquest", "Conquest")
+                    CurrencyLine("honor",    "Honor")
+                    CurrencyLine("tokens",   "Bloody Tokens")
+                end
+
                 GameTooltip:Show()
             end)
             row:SetScript("OnLeave", function(self)
@@ -1163,46 +1396,23 @@ local function RenderRosterView(frame)
                 GameTooltip:Hide()
             end)
 
-            row.charText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.charText:SetPoint("LEFT", 10, 0)
-            row.charText:SetWidth(130)
-            row.charText:SetJustifyH("LEFT")
-
-            row.specText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.specText:SetPoint("LEFT", row.charText, "RIGHT", 6, 0)
-            row.specText:SetWidth(120)
-            row.specText:SetJustifyH("LEFT")
-
-            row.bestText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.bestText:SetPoint("LEFT", row.specText, "RIGHT", 6, 0)
-            row.bestText:SetWidth(110)
-            row.bestText:SetJustifyH("CENTER")
-
-
-            row.shuffleText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.shuffleText:SetPoint("LEFT", row.bestText, "RIGHT", 6, 0)
-            row.shuffleText:SetWidth(95)
-            row.shuffleText:SetJustifyH("CENTER")
-
-            row.blitzText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.blitzText:SetPoint("LEFT", row.shuffleText, "RIGHT", 6, 0)
-            row.blitzText:SetWidth(85)
-            row.blitzText:SetJustifyH("CENTER")
-
-            row.twoText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.twoText:SetPoint("LEFT", row.blitzText, "RIGHT", 6, 0)
-            row.twoText:SetWidth(70)
-            row.twoText:SetJustifyH("CENTER")
-
-            row.threeText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.threeText:SetPoint("LEFT", row.twoText, "RIGHT", 6, 0)
-            row.threeText:SetWidth(70)
-            row.threeText:SetJustifyH("CENTER")
-
-            row.recordText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.recordText:SetPoint("LEFT", row.threeText, "RIGHT", 6, 0)
-            row.recordText:SetWidth(135)
-            row.recordText:SetJustifyH("RIGHT")
+            row.texts = row.texts or {}
+            for _, def in ipairs(COLUMN_DEFS) do
+                if not row.texts[def.id] then
+                    row.texts[def.id] = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                end
+            end
+            row.charText     = row.texts.name
+            row.specText     = row.texts.spec
+            row.bestText     = row.texts.best
+            row.shuffleText  = row.texts.shuffle
+            row.blitzText    = row.texts.blitz
+            row.twoText      = row.texts.two
+            row.threeText    = row.texts.three
+            row.conquestText = row.texts.conquest
+            row.honorText    = row.texts.honor
+            row.tokensText   = row.texts.tokens
+            row.recordText   = row.texts.record
 
             frame.rosterRows[index] = row
         end
@@ -1352,7 +1562,32 @@ local function RenderRosterView(frame)
         local pctColor = charPct >= 50 and "ff22c55e" or (charTotal > 0 and "ffef4444" or "ff888899")
 
         row.recordText:SetText(string.format("|cff22c55e%d|r - |cffef4444%d|r (|c%s%d%%|r)", charWins, charLoss, pctColor, charPct))
+        -- Currency columns (cached values — live API only for the logged-in character)
+        do
+            local cur = rec.currency or {}
 
+                        local function FormatCurrency(data)
+                if not data then return "|cff555566---|r" end
+                local wallet = data.amount or 0
+                local cap    = data.max or 0
+
+                if cap > 0 then
+                    local pct = wallet / cap
+                    local col = "ffffffff"
+                    if pct >= 0.95      then col = "ff22c55e"   -- near cap, spend it
+                    elseif pct >= 0.50  then col = "ffffd100"
+                    elseif pct <  0.10  then col = "ffef4444"   -- barely touched
+                    end
+                    return string.format("|c%s%d|r |cff666677/ %d|r", col, wallet, cap)
+                end
+                return string.format("|cffffffff%d|r", wallet)
+            end
+
+            row.conquestText:SetText(FormatCurrency(cur.conquest))
+            row.honorText:SetText(FormatCurrency(cur.honor))
+            row.tokensText:SetText(FormatCurrency(cur.tokens))
+        end
+        PositionRowColumns(row)
         row:Show()
         rowY = rowY - (ROW_HEIGHT + 2)
 
@@ -1378,6 +1613,10 @@ local function RenderRosterView(frame)
                     end
                     subRow.specText:SetText(subSpecDisplay)
                     subRow.bestText:SetText("|cff555566---|r")
+                    subRow.conquestText:SetText("|cff555566---|r")
+                    subRow.honorText:SetText("|cff555566---|r")
+                    subRow.tokensText:SetText("|cff555566---|r")
+                    PositionRowColumns(subRow)
 
                     local subShuffleData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "Shuffle", sName) or sData
                     subRow.shuffleText:SetText(FormatRatingWithDelta(subShuffleData))
@@ -1407,6 +1646,7 @@ local function RenderHistoryView(frame)
     if frame.rosterHeader then frame.rosterHeader:Hide() end
     if frame.sortBar then frame.sortBar:Hide() end
     frame.filterBar:Show()
+    if frame.columnsBtn then frame.columnsBtn:Hide() end
     SetTabActive(frame.tabRoster, false)
     SetTabActive(frame.tabHistory, true)
     UpdateSettingsButtonState(frame)
@@ -2267,27 +2507,108 @@ local function RenderSettingsView(frame)
         toggleDebugBtn:SetScript("OnClick", ToggleDebugMode)
         panel.toggleDebugBtn = toggleDebugBtn
 
-        -- Module Card: Storage & Addon Overview
-        local infoCard = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-        infoCard:SetSize(FRAME_WIDTH - 52, 105)
-        infoCard:SetPoint("TOPLEFT", 0, -400)
-        infoCard:SetBackdrop({
+                -- Module Card: Currency Alerts
+        local aCard = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+        aCard:SetSize(FRAME_WIDTH - 52, 300)
+        aCard:SetPoint("TOPLEFT", 0, -516)
+        aCard:SetBackdrop({
             bgFile = "Interface/Buttons/WHITE8X8",
             edgeFile = "Interface/Buttons/WHITE8X8",
             edgeSize = 1,
         })
-        infoCard:SetBackdropColor(0.08, 0.08, 0.10, 0.95)
-        infoCard:SetBackdropBorderColor(0.18, 0.19, 0.24, 0.9)
+        aCard:SetBackdropColor(0.08, 0.08, 0.10, 0.95)
+        aCard:SetBackdropBorderColor(0.18, 0.19, 0.24, 0.9)
 
-        local iTitle = infoCard:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        iTitle:SetPoint("TOPLEFT", 16, -14)
-        iTitle:SetText("|cffffd100Database & Storage|r")
+        local aTitle = aCard:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        aTitle:SetPoint("TOPLEFT", 16, -14)
+        aTitle:SetText("|cffffd100Currency Cap Alerts|r")
 
-        local iDesc = infoCard:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        iDesc:SetPoint("TOPLEFT", 16, -38)
-        iDesc:SetWidth(FRAME_WIDTH - 84)
-        iDesc:SetJustifyH("LEFT")
-        panel.infoDesc = iDesc
+        local aDesc = aCard:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        aDesc:SetPoint("TOPLEFT", 16, -36)
+        aDesc:SetWidth(FRAME_WIDTH - 84)
+        aDesc:SetJustifyH("LEFT")
+        aDesc:SetText("|cff888899Fires a movable toast when a wallet currency crosses its warning threshold. Useful for Honor and Bloody Tokens, which have fixed caps you can waste.|r")
+
+        -- Per-currency rows
+        local currencyMeta = {
+            { key = "honor",    label = "Honor",         cap = 15000 },
+            { key = "tokens",   label = "Bloody Tokens", cap = 50000 },
+            { key = "conquest", label = "Conquest",      cap = 0     },
+        }
+
+        local prevY = -74
+        panel.currencyToggles = {}
+
+        for _, meta in ipairs(currencyMeta) do
+            local row = CreateFrame("Button", nil, aCard, "BackdropTemplate")
+            row:SetSize(FRAME_WIDTH - 84, 22)
+            row:SetPoint("TOPLEFT", 16, prevY)
+            row:SetBackdrop({
+                bgFile = "Interface/Buttons/WHITE8X8",
+                edgeFile = "Interface/Buttons/WHITE8X8",
+                edgeSize = 1,
+            })
+            row:SetBackdropColor(0.13, 0.14, 0.18, 0.95)
+            row:SetBackdropBorderColor(0.30, 0.32, 0.40, 0.95)
+
+            local chk = row:CreateTexture(nil, "OVERLAY")
+            chk:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+            chk:SetSize(20, 20)
+            chk:SetPoint("LEFT", 1, 0)
+            row.chk = chk
+
+            local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+            lbl:SetPoint("LEFT", row, "LEFT", 28, 0)
+            lbl:SetText(meta.label)
+            row.lbl = lbl
+
+            local val = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            val:SetPoint("RIGHT", -10, 0)
+            val:SetJustifyH("RIGHT")
+            row.val = val
+
+            local key = meta.key
+            row:SetScript("OnClick", function()
+                local cfg = GetConfig()
+                local per = cfg.perCurrency[key]
+                per.enabled = not per.enabled
+                panel.UpdateStatus()
+            end)
+
+            panel.currencyToggles[key] = { row = row, meta = meta }
+            prevY = prevY - 26
+        end
+
+        -- Sound picker
+        local soundBtn = CreateStyledButton(aCard, "Sound: --", 180, 24)
+        soundBtn:SetPoint("TOPLEFT", 16, prevY - 6)
+        soundBtn:SetScript("OnClick", function(self)
+            local cfg = GetConfig()
+            local items = {}
+            for _, s in ipairs(SOUND_OPTIONS) do
+                local sid = s.id
+                table.insert(items, {
+                    type  = "radio",
+                    label = s.label,
+                    checked = function() return cfg.sound == sid end,
+                    onClick = function() cfg.sound = sid; panel.UpdateStatus() end,
+                })
+            end
+            ns.OpenDropdown(self, items)
+        end)
+        panel.soundBtn = soundBtn
+
+        -- Test + Reset Position
+        local testBtn = CreateStyledButton(aCard, "Test Alert", 130, 24)
+        testBtn:SetPoint("LEFT", soundBtn, "RIGHT", 8, 0)
+        testBtn:SetScript("OnClick", function() ns.TestCurrencyAlert() end)
+
+        local resetAlertBtn = CreateStyledButton(aCard, "Reset Alert Position", 170, 24)
+        resetAlertBtn:SetPoint("LEFT", testBtn, "RIGHT", 8, 0)
+        resetAlertBtn:SetScript("OnClick", function() ns.ResetCurrencyAlertPosition() end)
+
+
+
 
         panel.UpdateStatus = function()
             local isEnabled = ns.IsQueueTimerEnabled and ns.IsQueueTimerEnabled()
@@ -2296,6 +2617,11 @@ local function RenderSettingsView(frame)
                 panel.statusText:SetText("|cff888899Module Status:|r  |cff22c55e[ACTIVE] Overlay will show automatically in queue|r")
             else
                 panel.statusText:SetText("|cff888899Module Status:|r  |cffef4444[DISABLED] Overlay will not appear while in queue|r")
+            end
+
+            if panel.currencyAlertCheckbox and panel.currencyAlertCheckbox.checkTex then
+                local disabled = AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.disableCurrencyAlerts
+                panel.currencyAlertCheckbox.checkTex:SetShown(not disabled)
             end
 
             local isDebug = AlterArenaDB and AlterArenaDB.settings and (AlterArenaDB.settings.debugMode == true)
@@ -2316,6 +2642,31 @@ local function RenderSettingsView(frame)
                     panel.testBtn:SetText("|cffff4444Hide Test Timer|r")
                 else
                     panel.testBtn:SetText("Test Timer (Preview)")
+                end
+            end
+
+            -- Currency alert toggles
+            if panel.currencyToggles then
+                local cfg = GetConfig()
+                for key, entry in pairs(panel.currencyToggles) do
+                    local per = cfg.perCurrency[key]
+                    if per then
+                        entry.row.chk:SetShown(per.enabled)
+                        if per.threshold > 0 then
+                            entry.row.val:SetText(string.format("|cff888899alert at %d|r", per.threshold))
+                        else
+                            entry.row.val:SetText("|cff888899no fixed cap|r")
+                        end
+                    end
+                end
+            end
+            if panel.soundBtn then
+                local cfg = GetConfig()
+                for _, s in ipairs(SOUND_OPTIONS) do
+                    if s.id == cfg.sound then
+                        panel.soundBtn.text:SetText("Sound: " .. s.label)
+                        break
+                    end
                 end
             end
 
@@ -2345,7 +2696,7 @@ local function RenderSettingsView(frame)
 
     panel.UpdateStatus()
     panel:Show()
-    frame.content:SetHeight(530)
+    frame.content:SetHeight(620)
 end
 
 function ns.RefreshUI()

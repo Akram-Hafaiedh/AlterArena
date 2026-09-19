@@ -1,7 +1,7 @@
 ## Interface: 120100
 ## Title: AlterArena
 ## Notes: Cross-character PvP rating and match history tracker
-## Author: Mugiwara Boy
+## Author: Akram-Hafaiedh (Mugiwara bøy)
 ## Version: 0.1.0
 ## SavedVariables: AlterArenaDB
 ## X-Curse-Project-Name: AlterArena
@@ -11,4 +11,5 @@ Core.lua
 MatchTracker.lua
 QueueTimer.lua
 Dropdowns.lua
+CurrencyAlert.lua
 UI.lua
