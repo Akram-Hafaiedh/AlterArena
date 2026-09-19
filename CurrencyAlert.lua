@@ -69,7 +69,7 @@ end
 
 local function CreateAlertFrame()
     local f = CreateFrame("Frame", "AlterArenaCurrencyAlert", UIParent, "BackdropTemplate")
-    f:SetSize(340, 78)
+    f:SetSize(340, 108)
     f:SetFrameStrata("DIALOG")
     f:SetFrameLevel(100)
     f:SetMovable(true)
@@ -110,11 +110,57 @@ local function CreateAlertFrame()
 
     f.hint = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     f.hint:SetPoint("BOTTOMRIGHT", -10, 6)
-    f.hint:SetText("|cff666677Click to dismiss|r")
-
-    f:SetScript("OnMouseDown", function()
+    
+    -- updated hint
+    f.ctaBtn = CreateFrame("Button", nil, f, "BackdropTemplate")
+    f.ctaBtn:SetSize(120, 20)
+    f.ctaBtn:SetPoint("BOTTOMLEFT", 12, 6)
+    f.ctaBtn:SetBackdrop({
+        bgFile = "Interface/Buttons/WHITE8X8",
+        edgeFile = "Interface/Buttons/WHITE8X8",
+        edgeSize = 1,
+    })
+    f.ctaBtn:SetBackdropColor(0.16, 0.14, 0.08, 0.95)
+    f.ctaBtn:SetBackdropBorderColor(0.80, 0.65, 0.20, 0.9)
+    f.ctaBtn.text = f.ctaBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    f.ctaBtn.text:SetPoint("CENTER")
+    f.ctaBtn.text:SetText("|cffffd100Open Currency Tab|r")
+    f.ctaBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropColor(0.24, 0.20, 0.10, 1)
+    end)
+    f.ctaBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropColor(0.16, 0.14, 0.08, 0.95)
+    end)
+    f.ctaBtn:SetScript("OnClick", function()
+        if ToggleCharacter then
+            ToggleCharacter("TokenFrame")
+        end
         ns.HideCurrencyAlert()
     end)
+
+    -- Close button for the alert toast(X)
+    f.closeBtn = CreateFrame("Button", nil, f, "BackdropTemplate")
+    f.closeBtn:SetSize(18, 18)
+    f.closeBtn:SetPoint("TOPRIGHT", -6, -6)
+    f.closeBtn:SetBackdrop({
+        bgFile = "Interface/Buttons/WHITE8X8",
+        edgeFile = "Interface/Buttons/WHITE8X8",
+        edgeSize = 1,
+    })
+    f.closeBtn:SetBackdropColor(0.15, 0.15, 0.18, 0.8)
+    f.closeBtn:SetBackdropBorderColor(0.30, 0.30, 0.35, 0.8)
+    f.closeBtn.text = f.closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    f.closeBtn.text:SetPoint("CENTER", 0, 1)
+    f.closeBtn.text:SetText("|cffaaaaaa×|r")
+    f.closeBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropColor(0.8, 0.2, 0.2, 0.9)
+        self.text:SetText("|cffffffff×|r")
+    end)
+    f.closeBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropColor(0.15, 0.15, 0.18, 0.8)
+        self.text:SetText("|cffaaaaaa×|r")
+    end)
+    f.closeBtn:SetScript("OnClick", function() ns.HideCurrencyAlert() end)
 
     f:Hide()
     return f
