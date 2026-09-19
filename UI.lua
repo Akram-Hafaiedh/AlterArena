@@ -2647,7 +2647,7 @@ local function RenderSettingsView(frame)
 
             local key = meta.key
             row:SetScript("OnClick", function()
-                local cfg = GetConfig()
+                local cfg = ns.GetCurrencyAlertConfig()
                 local per = cfg.perCurrency[key]
                 per.enabled = not per.enabled
                 panel.UpdateStatus()
@@ -2661,9 +2661,9 @@ local function RenderSettingsView(frame)
         local soundBtn = CreateStyledButton(aCard, "Sound: --", 180, 24)
         soundBtn:SetPoint("TOPLEFT", 16, prevY - 6)
         soundBtn:SetScript("OnClick", function(self)
-            local cfg = GetConfig()
+            local cfg = ns.GetCurrencyAlertConfig()
             local items = {}
-            for _, s in ipairs(SOUND_OPTIONS) do
+            for _, s in ipairs(ns.SOUND_OPTIONS) do
                 local sid = s.id
                 table.insert(items, {
                     type  = "radio",
@@ -2725,7 +2725,7 @@ local function RenderSettingsView(frame)
 
             -- Currency alert toggles
             if panel.currencyToggles then
-                local cfg = GetConfig()
+                local cfg = ns.GetCurrencyAlertConfig()
                 for key, entry in pairs(panel.currencyToggles) do
                     local per = cfg.perCurrency[key]
                     if per then
@@ -2739,8 +2739,8 @@ local function RenderSettingsView(frame)
                 end
             end
             if panel.soundBtn then
-                local cfg = GetConfig()
-                for _, s in ipairs(SOUND_OPTIONS) do
+                local cfg = ns.GetCurrencyAlertConfig()
+                for _, s in ipairs(ns.SOUND_OPTIONS) do
                     if s.id == cfg.sound then
                         panel.soundBtn.text:SetText("Sound: " .. s.label)
                         break

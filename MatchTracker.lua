@@ -20,6 +20,18 @@ local function EnsurePVPInfo()
     end
 end
 
+-- WoW 12.x returns "secret values" for enemy GUIDs and names during arena
+-- matches. A secret value cannot be used as a table key or passed to most
+-- string functions. This helper returns true only when a value is safe to
+-- use as an index.
+local function IsIndexable(v)
+    if v == nil then return false end
+    if issecretvalue then
+        return not issecretvalue(v)
+    end
+    return true
+end
+
 -- Returns the current PvP season number, or nil if the API isn't available.
 -- Used to tag each match so we can filter by season later.
 local function GetCurrentSeasonId()
@@ -228,12 +240,16 @@ end
 
 local function AmbiguateName(name)
     if not name then return "" end
+    if not IsIndexable(name) then return "" end
     if Ambiguate then
-        return Ambiguate(name, "none")
+        local ok, result = pcall(Ambiguate, name, "none")
+        if ok and result then return result end
+        return ""
     end
-    return name:match("^([^%-]+)") or name
+    local ok, result = pcall(string.match, name, "^([^%-]+)")
+    if ok and result then return result end
+    return ""
 end
-
 -- Snapshots every rated bracket's current rating and games/rounds played
 -- so we can diff before/after a match and determine which bracket updated.
 local function CaptureRatingSnapshot()
@@ -426,37 +442,49 @@ local function OnMatchStart()
 
         local round = pendingMatch.currentRound
 
-        -- Track who we've already accounted for: the player + all enemies.
-        local known = { [UnitGUID("player")] = true }
-        local numOpp = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
-        for j = 1, numOpp do
-            local g = UnitGUID("arena" .. j)
-            if g then known[g] = true end
+        -- Helpers: is a unit the player, or one of the enemies this round?
+        local function IsSelf(u)
+            return UnitIsUnit(u, "player")
+        end
+        local function IsEnemy(u)
+            local n = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
+            for j = 1, n do
+                if UnitIsUnit(u, "arena" .. j) then return true end
+            end
+            return false
         end
 
-        -- Anyone else in our group is a teammate for this round.
-        local numGroup = (GetNumGroupMembers and GetNumGroupMembers()) or 0
-        for i = 1, numGroup do
-            local unit = "raid" .. i
-            if UnitExists(unit) then
-                local g = UnitGUID(unit)
-                if g and not known[g] then
-                    known[g] = true
-
-                    local icon = nil
-                    if GetInspectSpecialization and GetSpecializationInfoByID then
-                        local specID = GetInspectSpecialization(unit)
-                        if specID and specID > 0 then
-                            local _, _, _, sIcon = GetSpecializationInfoByID(specID)
-                            icon = sIcon
+        -- Scan every possible group-unit token. Solo Shuffle puts you in a
+        -- raid of 6, but party tokens can appear on some builds, so we
+        -- check both. UnitIsUnit is the only identity check that works
+        -- with Midnight's secret unit values.
+        local function ScanTeam(prefix, maxIndex)
+            for i = 1, maxIndex do
+                local unit = prefix .. i
+                if UnitExists(unit) then
+                    if not IsSelf(unit) and not IsEnemy(unit) then
+                        local icon = nil
+                        if GetInspectSpecialization and GetSpecializationInfoByID then
+                            local ok, specID = pcall(GetInspectSpecialization, unit)
+                            if ok and specID and specID > 0 then
+                                local _, _, _, sIcon = GetSpecializationInfoByID(specID)
+                                icon = sIcon
+                            end
                         end
-                    end
-
-                    if icon then
-                        table.insert(round.team, icon)
+                        if icon then
+                            table.insert(round.team, icon)
+                        end
                     end
                 end
             end
+        end
+
+        local numGroup = (GetNumGroupMembers and GetNumGroupMembers()) or 0
+        if IsInRaid and IsInRaid() then
+            ScanTeam("raid", numGroup)
+        else
+            -- Party path (rare in shuffle, but here for safety)
+            ScanTeam("party", math.max(1, numGroup - 1))
         end
     end)
 end
@@ -544,9 +572,10 @@ local function UpdateFromScoreboard(matchEntry, record)
             local sIcon = (sName and ns.GetSpecIcon and ns.GetSpecIcon(sName, cToken))
 
             if not sIcon or not sName then
-                local d = (info.guid and detectedPlayerSpecs[info.guid])
-                       or (info.name and detectedPlayerSpecs[info.name])
-                       or (cleanInfoName and detectedPlayerSpecs[cleanInfoName])
+                local d = nil
+                if IsIndexable(info.guid) then d = detectedPlayerSpecs[info.guid] end
+                if not d and IsIndexable(info.name) then d = detectedPlayerSpecs[info.name] end
+                if not d and IsIndexable(cleanInfoName) then d = detectedPlayerSpecs[cleanInfoName] end
                 if d then
                     sName = sName or d.spec
                     sIcon = sIcon or d.icon
@@ -847,11 +876,15 @@ function ns.InitMatchTracker()
                         local guid = UnitGUID(u)
                         local name = UnitName(u)
                         local data = { spec = sName, icon = sIcon, class = classToken }
-                        if guid then detectedPlayerSpecs[guid] = data end
-                        if name then
+                        if IsIndexable(guid) then
+                            detectedPlayerSpecs[guid] = data
+                        end
+                        if IsIndexable(name) then
                             detectedPlayerSpecs[name] = data
                             local clean = AmbiguateName(name)
-                            if clean ~= name then detectedPlayerSpecs[clean] = data end
+                            if IsIndexable(clean) and clean ~= "" and clean ~= name then
+                                detectedPlayerSpecs[clean] = data
+                            end
                         end
                     end
                 end
@@ -862,12 +895,14 @@ function ns.InitMatchTracker()
                     local guid = UnitGUID(u)
                     local name = UnitName(u)
                     local _, classToken = UnitClass(u)
-                    if classToken and not detectedPlayerSpecs[guid] then
+                    if classToken and IsIndexable(guid) and not detectedPlayerSpecs[guid] then
                         detectedPlayerSpecs[guid] = { class = classToken }
-                        if name then
+                        if IsIndexable(name) then
                             detectedPlayerSpecs[name] = { class = classToken }
                             local clean = AmbiguateName(name)
-                            if clean ~= name then detectedPlayerSpecs[clean] = { class = classToken } end
+                            if IsIndexable(clean) and clean ~= "" and clean ~= name then
+                                detectedPlayerSpecs[clean] = { class = classToken }
+                            end
                         end
                     end
                 end
@@ -892,3 +927,25 @@ function ns.InitMatchTracker()
         end
     end)
 end
+
+
+-- TEMP: Track arena unit deaths per round
+local f = CreateFrame("Frame")
+f:RegisterEvent("UNIT_HEALTH")
+f:SetScript("OnEvent", function(self, event, unit)
+    -- Filter to only relevant units
+    if not unit or not unit:match("^arena%d") and not unit:match("^raid%d") and not unit:match("^party%d") and unit ~= "player" then
+        return
+    end
+
+    local name = UnitName(unit) or "?"
+    local hp   = UnitHealth(unit) or 0
+    local maxHp= UnitHealthMax(unit) or 1
+    local dead = UnitIsDeadOrGhost(unit)
+    
+    -- Print all events for units that are at 0 HP or dead
+    if hp == 0 or dead then
+        print(string.format("|cffff8800[AA-DEATH]|r %s %s hp=%d/%d dead=%s",
+            event, unit, hp, maxHp, tostring(dead)))
+    end
+end)

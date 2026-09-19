@@ -220,3 +220,7 @@ function ns.CheckCurrencyAlerts()
         end
     end
 end
+
+
+ns.GetCurrencyAlertConfig = GetConfig
+ns.SOUND_OPTIONS = SOUND_OPTIONS
