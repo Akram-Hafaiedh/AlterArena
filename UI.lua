@@ -277,14 +277,27 @@ local function GetLastMatchTime(rec)
 end
 
 local function GetWinRate(rec)
-    local w, l = 0, 0
-    if rec and rec.matches then
+    if not rec then return -1 end
+    -- Mirror exactly what the roster row displays.
+    local specName = rec.spec
+    if not specName and rec.specStats then
+        for sName in pairs(rec.specStats) do specName = sName; break end
+    end
+    local shuffleData = ns.GetCharacterBracketData and ns.GetCharacterBracketData(rec, "Shuffle", specName)
+    local w, l, total = 0, 0, 0
+    if shuffleData and shuffleData.roundsPlayed and shuffleData.roundsPlayed > 0 then
+        w = shuffleData.roundsWon or 0
+        total = shuffleData.roundsPlayed
+    elseif specName and rec.specStats and rec.specStats[specName] and rec.specStats[specName].roundsPlayed and rec.specStats[specName].roundsPlayed > 0 then
+        local ss = rec.specStats[specName]
+        w = ss.roundsWon or 0
+        total = ss.roundsPlayed
+    elseif rec.matches and #rec.matches > 0 then
+        total = #rec.matches
         for _, m in ipairs(rec.matches) do
-            if m.won == true then w = w + 1
-            elseif m.won == false then l = l + 1 end
+            if m.won then w = w + 1 end
         end
     end
-    local total = w + l
     if total == 0 then return -1 end
     return w / total
 end
@@ -366,17 +379,17 @@ end
 
 local function GetMatchOutcome(m)
     if not m then return "D" end
-    if m.roundsWon ~= nil then
-        if m.roundsWon >= 4 then
+    -- Prefer the explicit won flag (already scaled for early leaves)
+    if m.won == true then return "W" end
+    if m.won == false then return "L" end
+    if m.won == nil and m.roundsWon ~= nil then
+        local played = m.roundsPlayed or 6
+        local winThreshold = math.floor(played / 2) + 1
+        local drawThreshold = played / 2
+        if m.roundsWon >= winThreshold then
             return "W"
-        elseif m.roundsWon == 3 then
+        elseif played % 2 == 0 and m.roundsWon == drawThreshold then
             return "D"
-        else
-            return "L"
-        end
-    elseif m.won ~= nil then
-        if m.won == true then
-            return "W"
         else
             return "L"
         end
@@ -1623,7 +1636,7 @@ local function RenderRosterView(frame)
                     subRow:SetBackdropBorderColor(0.12, 0.12, 0.15, 0.4)
                     subRow:SetPoint("TOPLEFT", 2, rowY)
 
-                    subRow.charText:SetText("|cff666677  >|r |cff888899(Spec)|r")
+                    subRow.charText:SetText("|cff666677  |TInterface\\ChatFrame\\ChatFrameExpandArrow:10:10:0:0|t|r |cff888899(Spec)|r")
 
                     local subSpecDisplay = ""
                     if sData.icon then
@@ -1647,9 +1660,8 @@ local function RenderRosterView(frame)
                     local sW = sData.roundsWon or 0
                     local sL = sData.roundsLost or ((sData.roundsPlayed or 0) - sW)
                     local sTot = (sData.roundsPlayed and sData.roundsPlayed > 0) and sData.roundsPlayed or (sW + sL)
-                    local sPct = sData.winRate or ((sTot > 0) and math.floor((sW / sTot) * 100) or 0)
-                    local sPctCol = (sPct >= 50) and "ff22c55e" or "ffef4444"
-                    subRow.recordText:SetText(string.format("|cff22c55e%d|r - |cffef4444%d|r (|c%s%.0f%%|r)", sW, sL, sPctCol, sPct))
+                    local sPct = (sTot > 0) and math.floor((sW / sTot) * 100) or 0
+                    subRow.recordText:SetText(string.format("|cff666677%d W · %d L (%d%%)|r", sW, sL, sPct))
 
                     subRow:Show()
                     rowY = rowY - (ROW_HEIGHT + 2)
@@ -2067,17 +2079,23 @@ local function RenderHistoryView(frame)
                         end
 
                         local leftSide = string.format("|cff22c55e%d:|r %s|cffffd100vs|r %s", rNum, teamIcons, enemyIcons)
-
-                        local dColor = (rData.won == true and "22c55e") or (rData.won == false and "ef4444") or "ffd100"
-                        local durText = ""
-                        if rData.duration and rData.duration > 0 then
-                            durText = FormatRoundDuration(rData.duration)
-                        elseif rData.won ~= nil then
-                            durText = rData.won and "Win" or "Loss"
+                        local dColor = (rData.won == true and "22c55e")
+                            or (rData.won == false and "ef4444")
+                            or "ffd100"
+                        local resultTag
+                        if rData.incomplete then
+                            resultTag = "|cff666677Left|r"      -- someone bailed mid-round
+                        elseif rData.won == true then
+                            resultTag = "|cff22c55eWin|r"
+                        elseif rData.won == false then
+                            resultTag = "|cffef4444Loss|r"
                         else
-                            durText = "—"
+                            resultTag = "|cff888899?|r"
                         end
-                        local rightSide = string.format("|cff%s%s|r", dColor, durText)
+                        local durText = (rData.duration and rData.duration > 0)
+                            and FormatRoundDuration(rData.duration)
+                            or "—"
+                        local rightSide = string.format("%s  |cff%s%s|r", resultTag, dColor, durText)
 
                         GameTooltip:AddDoubleLine(leftSide, rightSide)
                     end
@@ -2432,7 +2450,7 @@ local function RenderSettingsView(frame)
 
         -- Module Card: Queue Timer
         local qCard = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-        qCard:SetSize(FRAME_WIDTH - 52, 180)
+        qCard:SetSize(FRAME_WIDTH - 52, 220)
         qCard:SetPoint("TOPLEFT", 0, -66)
         qCard:SetBackdrop({
             bgFile = "Interface/Buttons/WHITE8X8",
@@ -2491,37 +2509,93 @@ local function RenderSettingsView(frame)
         end)
         panel.timerCheckbox = cb
 
-        -- Action Buttons for Queue Timer
+        -- Queue Timer pop sound picker
+        local qtSoundBtn = CreateStyledButton(qCard, "Pop Sound: --", 180, 24)
+        qtSoundBtn:SetPoint("TOPLEFT", 46, -132)
+        qtSoundBtn:SetScript("OnClick", function(self)
+            local items = {}
+            local lastCategory = nil
+            for _, snd in ipairs(ns.SOUNDS) do
+                -- Only show PvP category + None by default in the queue picker;
+                -- the fun cooldown-manager sounds are for the currency alert.
+                if snd.category == "PvP" or snd.id == "none" then
+                    if snd.category ~= lastCategory then
+                        table.insert(items, { type = "title", label = snd.category })
+                        lastCategory = snd.category
+                    end
+                    local sid, sfile, skit = snd.id, snd.file, snd.soundKit
+                    table.insert(items, {
+                        type     = "radio",
+                        label    = snd.label,
+                        keepOpen = true,
+                        checked  = function()
+                            return AlterArenaDB.settings.queueTimerSound == sid
+                        end,
+                        onClick  = function()
+                            AlterArenaDB.settings.queueTimerSound = sid
+                            panel.UpdateStatus()
+                        end,
+                        onHover  = function()
+                            ns.PlaySoundById(sid)
+                        end,
+                    })
+                end
+            end
+            ns.OpenDropdown(self, items)
+        end)
+        panel.qtSoundBtn = qtSoundBtn
+
+        -- Re-add the action buttons BELOW the sound picker
         local testBtn = CreateStyledButton(qCard, "Test Timer (Preview)", 150, 26)
-        testBtn:SetPoint("TOPLEFT", 46, -132)
+        testBtn:SetPoint("TOPLEFT", 46, -164)
         panel.testBtn = testBtn
         testBtn:SetScript("OnClick", function()
-            if ns.ToggleTestQueueTimer then
-                ns.ToggleTestQueueTimer()
-            end
-            if panel and panel.UpdateStatus then
-                panel.UpdateStatus()
-            end
+            if ns.ToggleTestQueueTimer then ns.ToggleTestQueueTimer() end
+            if panel and panel.UpdateStatus then panel.UpdateStatus() end
         end)
 
         local resetPosBtn = CreateStyledButton(qCard, "Reset HUD Position", 150, 26)
         resetPosBtn:SetPoint("LEFT", testBtn, "RIGHT", 12, 0)
         resetPosBtn:SetScript("OnClick", function()
-            if ns.ResetQueueTimerPosition then
-                ns.ResetQueueTimerPosition()
-            end
+            if ns.ResetQueueTimerPosition then ns.ResetQueueTimerPosition() end
             if ns.IsTestQueueTimerActive and not ns.IsTestQueueTimerActive() and ns.ToggleTestQueueTimer then
                 ns.ToggleTestQueueTimer()
             end
-            if panel and panel.UpdateStatus then
-                panel.UpdateStatus()
+            if panel and panel.UpdateStatus then panel.UpdateStatus() end
+        end)
+
+        -- Add a small "Play current" button next to the picker so the user
+        -- can hear the currently-selected sound without hovering.
+        -- The play glyph is embedded as a texture; the chat font in WoW
+        -- doesn't ship the "▶" codepoint so it renders as a missing box.
+        local qtPlayBtn = CreateStyledButton(
+            qCard,
+            "|TInterface\\COMMON\\VoiceChat-Speaker:14:14:0:0|t  Play",
+            70, 24
+        )
+        qtPlayBtn:SetPoint("LEFT", qtSoundBtn, "RIGHT", 8, 0)
+        qtPlayBtn:SetScript("OnClick", function()
+            ns.PlaySoundById(AlterArenaDB.settings.queueTimerSound or "pvpqueue")
+        end)
+        qtPlayBtn:SetScript("OnEnter", function(self)
+            self:SetBackdropColor(0.20, 0.22, 0.28, 1)
+            self:SetBackdropBorderColor(0.4, 0.45, 0.55, 1)
+            if GameTooltip then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText("Play a preview of the selected pop sound.", 1, 1, 1, 1, true)
+                GameTooltip:Show()
             end
+        end)
+        qtPlayBtn:SetScript("OnLeave", function(self)
+            self:SetBackdropColor(0.12, 0.13, 0.16, 0.9)
+            self:SetBackdropBorderColor(0.22, 0.23, 0.28, 0.9)
+            if GameTooltip then GameTooltip:Hide() end
         end)
 
         -- Module Card: Debug Mode
         local dCard = CreateFrame("Frame", nil, panel, "BackdropTemplate")
         dCard:SetSize(FRAME_WIDTH - 52, 130)
-        dCard:SetPoint("TOPLEFT", 0, -258)
+        dCard:SetPoint("TOPLEFT", 0, -298)
         dCard:SetBackdrop({
             bgFile = "Interface/Buttons/WHITE8X8",
             edgeFile = "Interface/Buttons/WHITE8X8",
@@ -2588,7 +2662,7 @@ local function RenderSettingsView(frame)
                 -- Module Card: Currency Alerts
         local aCard = CreateFrame("Frame", nil, panel, "BackdropTemplate")
         aCard:SetSize(FRAME_WIDTH - 52, 300)
-        aCard:SetPoint("TOPLEFT", 0, -516)
+        aCard:SetPoint("TOPLEFT", 0, -556)
         aCard:SetBackdrop({
             bgFile = "Interface/Buttons/WHITE8X8",
             edgeFile = "Interface/Buttons/WHITE8X8",
@@ -2657,21 +2731,80 @@ local function RenderSettingsView(frame)
             prevY = prevY - 26
         end
 
-        -- Sound picker
+                -- Sound picker — grouped by category, each group opens its own
+        -- submenu with a search box and per-row play buttons.
         local soundBtn = CreateStyledButton(aCard, "Sound: --", 180, 24)
         soundBtn:SetPoint("TOPLEFT", 16, prevY - 6)
         soundBtn:SetScript("OnClick", function(self)
             local cfg = ns.GetCurrencyAlertConfig()
-            local items = {}
-            for _, s in ipairs(ns.SOUND_OPTIONS) do
-                local sid = s.id
+            local currentId    = cfg.sound
+            local currentEntry = ns.SOUND_BY_ID and ns.SOUND_BY_ID[currentId]
+            local currentLabel = currentEntry and currentEntry.label or "None"
+
+            -- Bucket sounds by category, preserving the SOUNDS table order.
+            local buckets = {}
+            local order = {}
+            for _, snd in ipairs(ns.SOUNDS) do
+                local cat = snd.category or "Other"
+                if not buckets[cat] then
+                    buckets[cat] = {}
+                    table.insert(order, cat)
+                end
+                table.insert(buckets[cat], snd)
+            end
+
+            local items = {
+                { type = "title", label = "Current: " .. currentLabel },
+                { type = "divider" },
+            }
+
+            for _, cat in ipairs(order) do
+                local sounds = buckets[cat]
+
+                local subItems = {}
+                for _, snd in ipairs(sounds) do
+                    local sid = snd.id
+                    table.insert(subItems, {
+                        type    = "radio",
+                        label   = snd.label,
+                        icon    = "Interface\\Common\\VoiceChat-Speaker",
+                        iconTooltip = "Play preview",
+                        keepOpen = true,
+                        checked = function()
+                            local c = ns.GetCurrencyAlertConfig()
+                            return c and c.sound == sid
+                        end,
+                        -- Left-click the row: select AND preview.
+                        onClick = function()
+                            local c = ns.GetCurrencyAlertConfig()
+                            c.sound = sid
+                            ns.PlaySoundById(sid)
+                            if panel.UpdateStatus then panel.UpdateStatus() end
+                        end,
+                        -- Click the speaker icon: preview only.
+                        onIconClick = function()
+                            ns.PlaySoundById(sid)
+                        end,
+                    })
+                end
+
+                -- Bullet the category row if the current pick lives inside it.
+                local catLabel = cat
+                for _, snd in ipairs(sounds) do
+                    if snd.id == currentId then
+                        catLabel = cat .. "  |cff22c55e•|r"
+                        break
+                    end
+                end
+
                 table.insert(items, {
-                    type  = "radio",
-                    label = s.label,
-                    checked = function() return cfg.sound == sid end,
-                    onClick = function() cfg.sound = sid; panel.UpdateStatus() end,
+                    type          = "button",
+                    label         = catLabel,
+                    submenu       = subItems,
+                    submenuSearch = true,
                 })
             end
+
             ns.OpenDropdown(self, items)
         end)
         panel.soundBtn = soundBtn
@@ -2685,8 +2818,27 @@ local function RenderSettingsView(frame)
         resetAlertBtn:SetPoint("LEFT", testBtn, "RIGHT", 8, 0)
         resetAlertBtn:SetScript("OnClick", function() ns.ResetCurrencyAlertPosition() end)
 
+        -- Module Card: Database & Storage (was removed when alerts were added)
+        local infoCard = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+        infoCard:SetSize(FRAME_WIDTH - 52, 105)
+        infoCard:SetPoint("TOPLEFT", 0, -868)
+        infoCard:SetBackdrop({
+            bgFile = "Interface/Buttons/WHITE8X8",
+            edgeFile = "Interface/Buttons/WHITE8X8",
+            edgeSize = 1,
+        })
+        infoCard:SetBackdropColor(0.08, 0.08, 0.10, 0.95)
+        infoCard:SetBackdropBorderColor(0.18, 0.19, 0.24, 0.9)
 
+        local iTitle = infoCard:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        iTitle:SetPoint("TOPLEFT", 16, -14)
+        iTitle:SetText("|cffffd100Database & Storage|r")
 
+        local iDesc = infoCard:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        iDesc:SetPoint("TOPLEFT", 16, -38)
+        iDesc:SetWidth(FRAME_WIDTH - 84)
+        iDesc:SetJustifyH("LEFT")
+        panel.infoDesc = iDesc
 
         panel.UpdateStatus = function()
             local isEnabled = ns.IsQueueTimerEnabled and ns.IsQueueTimerEnabled()
@@ -2738,14 +2890,18 @@ local function RenderSettingsView(frame)
                     end
                 end
             end
+            if panel.qtSoundBtn then
+                local cur = AlterArenaDB
+                    and AlterArenaDB.settings
+                    and AlterArenaDB.settings.queueTimerSound
+                    or "pvpqueue"
+                local entry = ns.SOUND_BY_ID and ns.SOUND_BY_ID[cur]
+                panel.qtSoundBtn.text:SetText("Pop Sound: " .. (entry and entry.label or "—"))
+            end
             if panel.soundBtn then
                 local cfg = ns.GetCurrencyAlertConfig()
-                for _, s in ipairs(ns.SOUND_OPTIONS) do
-                    if s.id == cfg.sound then
-                        panel.soundBtn.text:SetText("Sound: " .. s.label)
-                        break
-                    end
-                end
+                local entry = ns.SOUND_BY_ID and ns.SOUND_BY_ID[cfg.sound]
+                panel.soundBtn.text:SetText("Sound: " .. (entry and entry.label or "—"))
             end
 
             -- Update database stats
@@ -2774,7 +2930,7 @@ local function RenderSettingsView(frame)
 
     panel.UpdateStatus()
     panel:Show()
-    frame.content:SetHeight(620)
+    frame.content:SetHeight(1000)
 end
 
 function ns.RefreshUI()

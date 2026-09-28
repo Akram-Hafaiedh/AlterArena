@@ -349,10 +349,17 @@ local function OnUpdate(self, delta)
 end
 
 local function PlayPopAlert()
-    local ok = pcall(PlaySound, 8959)
-    if not ok then
-        PlaySoundFile("Sound\\Interface\\ReadyCheck.ogg")
+    local soundID = AlterArenaDB
+        and AlterArenaDB.settings
+        and AlterArenaDB.settings.queueTimerSound
+        or "pvpqueue"
+
+    if ns.PlaySoundById then
+        ns.PlaySoundById(soundID)
+    else
+        pcall(PlaySound, 8959)
     end
+
     print("|cff40c0ffAlterArena|r: Queue popped — accept it!")
 end
 

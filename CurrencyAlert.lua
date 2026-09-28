@@ -17,16 +17,6 @@ local DEFAULTS = {
     tokens   = { enabled = true,  threshold = 45000 },
 }
 
--- Curated sounds. Add more by appending entries; the picker iterates this
--- table directly.
-local SOUND_OPTIONS = {
-    { id = "none",        label = "None",         file = nil },
-    { id = "readycheck",  label = "Ready Check",  file = "Sound\\Interface\\ReadyCheck.ogg" },
-    { id = "raidwarning", label = "Raid Warning", file = "Sound\\Interface\\RaidWarning.ogg" },
-    { id = "alarm",       label = "Alarm Clock",  file = "Sound\\Interface\\AlarmClockWarning3.ogg" },
-    { id = "achievement", label = "Achievement",  file = "Sound\\Interface\\AchievementMenuOpen.ogg" },
-}
-
 local lastKnownAmount = {}
 
 -- -------------------------------------------------------------------------
@@ -51,7 +41,7 @@ local function GetConfig()
 end
 
 local function GetSoundFile(soundID)
-    for _, s in ipairs(SOUND_OPTIONS) do
+    for _, s in ipairs(ns.SOUNDS) do
         if s.id == soundID then return s.file end
     end
     return nil
@@ -269,4 +259,3 @@ end
 
 
 ns.GetCurrencyAlertConfig = GetConfig
-ns.SOUND_OPTIONS = SOUND_OPTIONS
