@@ -67,7 +67,17 @@ local function MakeSettingsCard(parent, title, height)
     return card
 end
 
-local function MakeCheckRow(parent, label, y)
+local function MakeCheckRow(parent, label, y, onChange)
+    if ns.CreateUIToggle then
+        local toggle = ns.CreateUIToggle(parent, {
+            label = label,
+            labelOnRight = true,
+            onChange = onChange,
+        })
+        toggle:SetPoint("TOPLEFT", 14, y)
+        return toggle
+    end
+
     local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
     btn:SetSize(20, 20)
     btn:SetPoint("TOPLEFT", 14, y)
@@ -89,6 +99,13 @@ local function MakeCheckRow(parent, label, y)
     lbl:SetPoint("LEFT", btn, "RIGHT", 10, 0)
     lbl:SetText(label)
     btn.label = lbl
+    if onChange then
+        btn:SetScript("OnClick", function()
+            local now = not (btn.checkTex and btn.checkTex:IsShown())
+            if btn.checkTex then btn.checkTex:SetShown(now) end
+            onChange(now)
+        end)
+    end
     return btn
 end
 
@@ -194,16 +211,22 @@ local function CreateSettingsFrame()
         NotifyMainGear()
     end)
 
-    -- Scrollable body
-    local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+    -- Scrollable body (custom scrollbar)
+    local scroll, content
+    if ns.CreateScrollFrame then
+        scroll, content = ns.CreateScrollFrame(f)
+    else
+        scroll = CreateFrame("ScrollFrame", nil, f)
+        content = CreateFrame("Frame", nil, scroll)
+        scroll:SetScrollChild(content)
+        scroll:EnableMouseWheel(true)
+    end
     scroll:SetPoint("TOPLEFT", 8, -42)
-    scroll:SetPoint("BOTTOMRIGHT", -28, 10)
-
-    local content = CreateFrame("Frame", nil, scroll)
-    content:SetWidth(SETTINGS_W - 44)
+    scroll:SetPoint("BOTTOMRIGHT", -14, 10)
+    content:SetWidth(SETTINGS_W - 36)
     content:SetHeight(10)
-    scroll:SetScrollChild(content)
     f.content = content
+    f.scroll = scroll
 
     local cardW = SETTINGS_W - 44
     local y = 0
@@ -214,13 +237,11 @@ local function CreateSettingsFrame()
     qCard:SetPoint("TOPLEFT", 0, y)
     y = y - 168 - CARD_GAP
 
-    local qCb = MakeCheckRow(qCard, "Show floating HUD while queued", -40)
-    f.timerCheckbox = qCb
-    qCb:SetScript("OnClick", function()
-        local on = not (ns.IsQueueTimerEnabled and ns.IsQueueTimerEnabled())
+    local qCb = MakeCheckRow(qCard, "Show floating HUD while queued", -40, function(on)
         if ns.SetQueueTimerEnabled then ns.SetQueueTimerEnabled(on) end
         f.UpdateStatus()
     end)
+    f.timerCheckbox = qCb
 
     local qDesc = qCard:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     qDesc:SetPoint("TOPLEFT", 44, -66)
@@ -232,7 +253,7 @@ local function CreateSettingsFrame()
     qStatus:SetPoint("TOPLEFT", 44, -86)
     f.qStatus = qStatus
 
-    local qtSoundBtn = CreateStyledButton(qCard, "Pop Sound: —", 160, 24)
+    local qtSoundBtn = CreateStyledButton(qCard, "Sound: —", 200, 24)
     qtSoundBtn:SetPoint("TOPLEFT", 14, -112)
     f.qtSoundBtn = qtSoundBtn
     qtSoundBtn:SetScript("OnClick", function(self)
@@ -328,7 +349,7 @@ local function CreateSettingsFrame()
         cy = cy - 26
     end
 
-    local aSoundBtn = CreateStyledButton(aCard, "Sound: —", 160, 24)
+    local aSoundBtn = CreateStyledButton(aCard, "Sound: —", 200, 24)
     aSoundBtn:SetPoint("TOPLEFT", 14, cy - 6)
     f.alertSoundBtn = aSoundBtn
     aSoundBtn:SetScript("OnClick", function(self)
@@ -366,27 +387,154 @@ local function CreateSettingsFrame()
     end)
 
     -- ── 3. Debug ────────────────────────────────────────────────────────
-    local dCard = MakeSettingsCard(content, "Debug Logging", 96)
+    local dCard = MakeSettingsCard(content, "Debug", 168)
     dCard:SetWidth(cardW)
     dCard:SetPoint("TOPLEFT", 0, y)
-    y = y - 96 - CARD_GAP
+    y = y - 168 - CARD_GAP
 
-    local dCb = MakeCheckRow(dCard, "Verbose [AA-DEBUG] chat logging", -40)
-    f.debugCheckbox = dCb
-    dCb:SetScript("OnClick", function()
+    local dCb = MakeCheckRow(dCard, "Enable debug logging (window only)", -40, function(on)
         AlterArenaDB = AlterArenaDB or {}
         AlterArenaDB.settings = AlterArenaDB.settings or {}
-        AlterArenaDB.settings.debugMode = not AlterArenaDB.settings.debugMode
-        local s = AlterArenaDB.settings.debugMode and "|cff22c55eENABLED|r" or "|cffef4444DISABLED|r"
-        print(string.format("|cff40c0ffAlterArena|r: Debug mode %s.", s))
+        AlterArenaDB.settings.debugMode = on
+        local st = on and "|cff22c55eENABLED|r" or "|cffef4444DISABLED|r"
+        print(string.format("|cff40c0ffAlterArena|r: Debug mode %s.", st))
         f.UpdateStatus()
     end)
+    f.debugCheckbox = dCb
+
+    local dMirror = MakeCheckRow(dCard, "Also mirror debug lines to chat", -66, function(on)
+        AlterArenaDB = AlterArenaDB or {}
+        AlterArenaDB.settings = AlterArenaDB.settings or {}
+        AlterArenaDB.settings.mirrorDebugChat = on
+        local st = on and "|cff22c55eON|r" or "|cffef4444OFF|r"
+        print(string.format("|cff40c0ffAlterArena|r: Mirror debug to chat %s.", st))
+        f.UpdateStatus()
+    end)
+    f.mirrorCheckbox = dMirror
 
     local dStatus = dCard:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    dStatus:SetPoint("TOPLEFT", 44, -68)
+    dStatus:SetPoint("TOPLEFT", 44, -96)
     f.debugStatusText = dStatus
 
-    -- ── 4. Database ─────────────────────────────────────────────────────
+    local dOpen = CreateStyledButton(dCard, "Open Debug Window", 140, 24)
+    dOpen:SetPoint("TOPLEFT", 14, -122)
+    dOpen:SetScript("OnClick", function()
+        if ns.ToggleDebugWindow then
+            ns.ToggleDebugWindow(true)
+        else
+            print("|cff40c0ffAlterArena|r: Debug module not loaded.")
+        end
+    end)
+
+
+    -- ── Appearance (CraftBell-style) ────────────────────────────────────
+    local appCard = MakeSettingsCard(content, "Appearance", 200)
+    appCard:SetWidth(cardW)
+    appCard:SetPoint("TOPLEFT", 0, y)
+    y = y - 200 - CARD_GAP
+
+    local function AppearanceDropdown(parent, yOff, label, options, getValue, setValue)
+        local lbl = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        lbl:SetPoint("TOPLEFT", 14, yOff)
+        lbl:SetText("|cff888899" .. label .. "|r")
+
+        local btn = CreateStyledButton(parent, "—", 150, 24)
+        btn:SetPoint("TOPLEFT", 140, yOff + 2)
+        local function RefreshLabel()
+            local cur = getValue()
+            local text = cur
+            for _, opt in ipairs(options) do
+                if opt.value == cur then text = opt.label break end
+            end
+            btn.text:SetText(text)
+        end
+        btn:SetScript("OnClick", function(self)
+            local items = {}
+            for _, opt in ipairs(options) do
+                local v, lab = opt.value, opt.label
+                table.insert(items, {
+                    type = "radio",
+                    label = lab,
+                    checked = function() return getValue() == v end,
+                    onClick = function()
+                        setValue(v)
+                        RefreshLabel()
+                        if ns.UI and ns.UI.ApplyAppearance then
+                            ns.UI.ApplyAppearance()
+                        end
+                    end,
+                })
+            end
+            if ns.OpenDropdown then ns.OpenDropdown(self, items) end
+        end)
+        RefreshLabel()
+        return btn
+    end
+
+    AlterArenaDB = AlterArenaDB or {}
+    AlterArenaDB.settings = AlterArenaDB.settings or {}
+    local sett = AlterArenaDB.settings
+
+    f.sizeBtn = AppearanceDropdown(appCard, -40, "Window size", {
+        { value = "compact", label = "Compact" },
+        { value = "normal",  label = "Normal" },
+        { value = "large",   label = "Large" },
+        { value = "xl",      label = "Extra Large" },
+    }, function() return sett.windowSize or "normal" end,
+       function(v) sett.windowSize = v end)
+
+    f.accentBtn = AppearanceDropdown(appCard, -72, "Accent color", {
+        { value = "cyan",    label = "Cyan" },
+        { value = "violet",  label = "Violet" },
+        { value = "emerald", label = "Emerald" },
+        { value = "amber",   label = "Amber" },
+        { value = "rose",    label = "Rose" },
+    }, function() return sett.colorScheme or "cyan" end,
+       function(v) sett.colorScheme = v end)
+
+    f.bgBtn = AppearanceDropdown(appCard, -104, "Background", {
+        { value = "slate",    label = "Slate" },
+        { value = "charcoal", label = "Charcoal" },
+        { value = "midnight", label = "Midnight" },
+        { value = "graphite", label = "Graphite" },
+        { value = "warm",     label = "Warm" },
+    }, function() return sett.bgScheme or "slate" end,
+       function(v) sett.bgScheme = v end)
+
+    f.fontBtn = AppearanceDropdown(appCard, -136, "UI font", {
+        { value = "default",  label = "Default" },
+        { value = "friz",     label = "Friz Quadrata" },
+        { value = "arialn",   label = "Arial Narrow" },
+        { value = "morpheus", label = "Morpheus" },
+        { value = "skurri",   label = "Skurri" },
+    }, function() return sett.uiFont or "default" end,
+       function(v) sett.uiFont = v end)
+
+    local appHint = appCard:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    appHint:SetPoint("TOPLEFT", 14, -170)
+    appHint:SetText("Size applies immediately. Theme updates open windows.")
+
+
+    -- ── 4. Interface ────────────────────────────────────────────────────
+    local mCard = MakeSettingsCard(content, "Interface", 88)
+    mCard:SetWidth(cardW)
+    mCard:SetPoint("TOPLEFT", 0, y)
+    y = y - 88 - CARD_GAP
+
+    local mCb = MakeCheckRow(mCard, "Show minimap button", -40, function(on)
+        if ns.SetMinimapShown then ns.SetMinimapShown(on) end
+        local st = on and "|cff22c55eSHOWN|r" or "|cffef4444HIDDEN|r"
+        print(string.format("|cff40c0ffAlterArena|r: Minimap button %s.", st))
+        f.UpdateStatus()
+    end)
+    f.minimapCheckbox = mCb
+
+    local mHint = mCard:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    mHint:SetPoint("TOPLEFT", 44, -68)
+    mHint:SetTextColor(0.55, 0.55, 0.6)
+    mHint:SetText("Left-click open  ·  Right-click settings  ·  Shift-click debug")
+
+    -- ── 5. Database ─────────────────────────────────────────────────────
     local iCard = MakeSettingsCard(content, "Database", 88)
     iCard:SetWidth(cardW)
     iCard:SetPoint("TOPLEFT", 0, y)
@@ -399,6 +547,9 @@ local function CreateSettingsFrame()
     f.infoDesc = iDesc
 
     content:SetHeight(math.abs(y) + 8)
+    if f.scroll and f.scroll.UpdateThumb then
+        f.scroll:UpdateThumb()
+    end
 
     f.UpdateStatus = function()
         local qtOn = ns.IsQueueTimerEnabled and ns.IsQueueTimerEnabled()
@@ -417,7 +568,7 @@ local function CreateSettingsFrame()
         if f.qtSoundBtn then
             local id = AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.queueTimerSound or "pvpqueue"
             local entry = ns.SOUND_BY_ID and ns.SOUND_BY_ID[id]
-            f.qtSoundBtn.text:SetText("Pop Sound: " .. (entry and entry.label or id))
+            f.qtSoundBtn.text:SetText(entry and entry.label or id)
         end
 
         if f.currencyToggles and ns.GetCurrencyAlertConfig then
@@ -435,18 +586,30 @@ local function CreateSettingsFrame()
             end
             if f.alertSoundBtn then
                 local entry = ns.SOUND_BY_ID and ns.SOUND_BY_ID[cfg.sound]
-                f.alertSoundBtn.text:SetText("Sound: " .. (entry and entry.label or (cfg.sound or "—")))
+                f.alertSoundBtn.text:SetText(entry and entry.label or (cfg.sound or "—"))
             end
         end
 
         local dbg = AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.debugMode
+        local mirror = AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.mirrorDebugChat
         if f.debugCheckbox and f.debugCheckbox.checkTex then
             f.debugCheckbox.checkTex:SetShown(dbg)
         end
+        if f.mirrorCheckbox and f.mirrorCheckbox.checkTex then
+            f.mirrorCheckbox.checkTex:SetShown(mirror)
+        end
         if f.debugStatusText then
-            f.debugStatusText:SetText(dbg
-                and "|cff888899Status:|r |cff22c55eOn|r — match/rating diagnostics in chat"
-                or  "|cff888899Status:|r |cff888899Off|r")
+            if dbg and mirror then
+                f.debugStatusText:SetText("|cff888899Status:|r |cff22c55eOn|r  |cff888899(window + chat)|r")
+            elseif dbg then
+                f.debugStatusText:SetText("|cff888899Status:|r |cff22c55eOn|r  |cff888899(window only)|r")
+            else
+                f.debugStatusText:SetText("|cff888899Status:|r |cff888899Off|r")
+            end
+        end
+        if f.minimapCheckbox and f.minimapCheckbox.checkTex then
+            local shown = ns.IsMinimapShown and ns.IsMinimapShown()
+            f.minimapCheckbox.checkTex:SetShown(shown)
         end
 
         local chars, matches = 0, 0

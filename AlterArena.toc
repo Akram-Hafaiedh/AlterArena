@@ -7,9 +7,23 @@
 ## X-Curse-Project-Name: AlterArena
 ## X-Category: PvP
 
+# Data (static tables — load first)
+Data\Currency.lua
+Data\Sounds.lua
+Data\Maps.lua
+Data\Labels.lua
+Data\Specs.lua
+
+# Core
+Utils\UITheme.lua
+Core\Database.lua
 Core.lua
 Dropdowns.lua
 UI.lua
+
+# Modules
+modules\Debug.lua
+modules\Minimap.lua
 modules\MatchTracker.lua
 modules\QueueTimer.lua
 modules\CurrencyAlert.lua

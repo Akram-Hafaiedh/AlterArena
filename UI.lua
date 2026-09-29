@@ -31,40 +31,7 @@ ui.historyFilters = ui.historyFilters or {
     season  = "ALL",
 }
 
--- Filter label tables (shared with History.lua)
-ns.ui.BRACKET_LABELS = {
-    ALL     = "All Brackets",
-    Shuffle = "Solo Shuffle",
-    Blitz   = "Battleground Blitz",
-    ["2v2"] = "2v2 Arena",
-    ["3v3"] = "3v3 Arena",
-}
-ns.ui.RESULT_LABELS = {
-    ALL    = "Any Result",
-    WINS   = "Wins Only",
-    LOSSES = "Losses Only",
-    DRAWS  = "Draws Only",
-}
-ns.ui.DATE_LABELS = {
-    ALL         = "All Time",
-    TODAY       = "Last 24 Hours",
-    THISWEEK    = "Last 7 Days",
-    THISMONTH   = "Last 30 Days",
-    LAST3MONTHS = "Last 3 Months",
-    LAST6MONTHS = "Last 6 Months",
-}
-ns.ui.SEASON_LABELS = {
-    ALL     = "All Seasons",
-    CURRENT = "Current Season",
-    LAST    = "Last Season",
-}
-ns.ui.DATE_CUTOFFS = {
-    TODAY       = 24 * 3600,
-    THISWEEK    = 7 * 24 * 3600,
-    THISMONTH   = 30 * 24 * 3600,
-    LAST3MONTHS = 90 * 24 * 3600,
-    LAST6MONTHS = 180 * 24 * 3600,
-}
+-- Filter labels: see Data/Labels.lua (ns.ui.*)
 
 
 function ns.GetMainFrame()
@@ -90,6 +57,134 @@ function ns.GetClassColor(classFilename)
         return RAID_CLASS_COLORS[classFilename]
     end
     return { r = 0.8, g = 0.8, b = 0.8, colorStr = "ffcccccc" }
+end
+
+-- =========================================================================
+-- Custom scrollbar (from RealmDisplay) — track + draggable thumb
+-- Returns scrollFrame, scrollChild. Call scroll:UpdateThumb() after resizing child.
+-- =========================================================================
+function ns.CreateScrollFrame(parent)
+    local scroll = CreateFrame("ScrollFrame", nil, parent)
+    scroll:EnableMouseWheel(true)
+
+    local track = CreateFrame("Frame", nil, scroll, "BackdropTemplate")
+    track:SetWidth(6)
+    track:SetPoint("TOPRIGHT", scroll, "TOPRIGHT", 0, 0)
+    track:SetPoint("BOTTOMRIGHT", scroll, "BOTTOMRIGHT", 0, 0)
+    track:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Buttons\\WHITE8x8",
+        edgeSize = 1,
+    })
+    track:SetBackdropColor(0.08, 0.09, 0.11, 1)
+    track:SetBackdropBorderColor(0.18, 0.20, 0.24, 1)
+
+    local thumb = CreateFrame("Button", nil, track, "BackdropTemplate")
+    thumb:SetWidth(6)
+    thumb:SetHeight(40)
+    thumb:SetPoint("TOP", track, "TOP", 0, 0)
+    thumb:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Buttons\\WHITE8x8",
+        edgeSize = 1,
+    })
+    local function AccentThumb()
+        local a = (ns.UI and ns.UI.colors and ns.UI.colors.accent) or { 0.25, 0.75, 1.0, 1 }
+        thumb:SetBackdropColor(a[1], a[2], a[3], 0.45)
+        thumb:SetBackdropBorderColor(a[1], a[2], a[3], 0.7)
+    end
+    AccentThumb()
+    if ns.UI and ns.UI.RegisterThemed then
+        ns.UI.RegisterThemed(thumb, AccentThumb)
+    end
+    thumb:RegisterForDrag("LeftButton")
+    thumb:SetMovable(true)
+    thumb:SetScript("OnEnter", function(self)
+        self:SetBackdropColor(0.25, 0.75, 1.0, 0.75)
+    end)
+    thumb:SetScript("OnLeave", function(self)
+        self:SetBackdropColor(0.25, 0.75, 1.0, 0.45)
+    end)
+
+    local child = CreateFrame("Frame", nil, scroll)
+    child:SetSize(1, 1)
+    scroll:SetScrollChild(child)
+
+    local function UpdateThumb()
+        local viewH = scroll:GetHeight() or 1
+        local childH = child:GetHeight() or 1
+        local maxScroll = math.max(childH - viewH, 0)
+        if maxScroll <= 0 then
+            track:Hide()
+            scroll:SetVerticalScroll(0)
+            return
+        end
+        track:Show()
+        local ratio = viewH / math.max(childH, 1)
+        local thumbH = math.max(24, viewH * ratio)
+        thumb:SetHeight(thumbH)
+        local cur = scroll:GetVerticalScroll() or 0
+        local trackH = track:GetHeight() or 1
+        local y = 0
+        if maxScroll > 0 and (trackH - thumbH) > 0 then
+            y = -(cur / maxScroll) * (trackH - thumbH)
+        end
+        thumb:ClearAllPoints()
+        thumb:SetPoint("TOP", track, "TOP", 0, y)
+    end
+
+    scroll:SetScript("OnVerticalScroll", function()
+        UpdateThumb()
+    end)
+
+    scroll:SetScript("OnMouseWheel", function(self, delta)
+        local viewH = self:GetHeight() or 1
+        local childH = child:GetHeight() or 1
+        local maxScroll = math.max(childH - viewH, 0)
+        local cur = self:GetVerticalScroll() or 0
+        local step = 28
+        local new = math.min(maxScroll, math.max(0, cur - delta * step))
+        self:SetVerticalScroll(new)
+        UpdateThumb()
+    end)
+
+    thumb:SetScript("OnDragStart", function(self)
+        self.dragging = true
+    end)
+    thumb:SetScript("OnDragStop", function(self)
+        self.dragging = false
+    end)
+    thumb:SetScript("OnUpdate", function(self)
+        if not self.dragging then return end
+        local scale = self:GetEffectiveScale()
+        local _, cursorY = GetCursorPosition()
+        cursorY = cursorY / scale
+        local top = track:GetTop() or 0
+        local trackH = track:GetHeight() or 1
+        local thumbH = self:GetHeight() or 24
+        local rel = top - cursorY - thumbH / 2
+        rel = math.min(math.max(rel, 0), trackH - thumbH)
+        local viewH = scroll:GetHeight() or 1
+        local childH = child:GetHeight() or 1
+        local maxScroll = math.max(childH - viewH, 0)
+        local offset = 0
+        if trackH > thumbH then
+            offset = (rel / (trackH - thumbH)) * maxScroll
+        end
+        scroll:SetVerticalScroll(offset)
+        self:ClearAllPoints()
+        self:SetPoint("TOP", track, "TOP", 0, -rel)
+    end)
+
+    scroll.UpdateThumb = UpdateThumb
+    scroll.track = track
+    scroll.thumb = thumb
+
+    scroll:SetScript("OnSizeChanged", function()
+        UpdateThumb()
+    end)
+
+    return scroll, child
 end
 
 function ns.FormatDuration(seconds)
@@ -171,7 +266,11 @@ function ns.CreateStyledButton(parent, text, width, height)
     btn:SetBackdropBorderColor(0.22, 0.23, 0.28, 0.9)
 
     btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    btn.text:SetPoint("CENTER")
+    btn.text:SetPoint("LEFT", 6, 0)
+    btn.text:SetPoint("RIGHT", -6, 0)
+    btn.text:SetJustifyH("CENTER")
+    btn.text:SetWordWrap(false)
+    btn.text:SetMaxLines(1)
     btn.text:SetText(text)
 
     function btn:SetText(t)
@@ -278,6 +377,13 @@ ns.UpdateSettingsButtonState = UpdateSettingsButtonState
 
 local function CreateMainFrame()
     local frame = CreateFrame("Frame", "AlterArenaMainFrame", UIParent, "BackdropTemplate")
+    if ns.UI and ns.UI.GetWindowSize then
+        local sz = ns.UI.GetWindowSize()
+        if sz then
+            ui.FRAME_WIDTH = sz.w
+            ui.FRAME_HEIGHT = sz.h
+        end
+    end
     frame:SetSize(ui.FRAME_WIDTH, ui.FRAME_HEIGHT)
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -305,8 +411,14 @@ local function CreateMainFrame()
         edgeSize = 1,
         insets = { left = 1, right = 1, top = 1, bottom = 1 },
     })
-    frame:SetBackdropColor(0.07, 0.07, 0.09, 0.96)
-    frame:SetBackdropBorderColor(0.20, 0.21, 0.25, 0.95)
+    local c = ns.UI and ns.UI.colors
+    if c then
+        frame:SetBackdropColor(c.bg[1], c.bg[2], c.bg[3], c.bg[4] or 1)
+        frame:SetBackdropBorderColor(c.border[1], c.border[2], c.border[3], c.border[4] or 1)
+    else
+        frame:SetBackdropColor(0.07, 0.07, 0.09, 0.96)
+        frame:SetBackdropBorderColor(0.20, 0.21, 0.25, 0.95)
+    end
 
     -- Top Title Bar
     local titleBar = CreateFrame("Frame", nil, frame, "BackdropTemplate")
@@ -451,7 +563,7 @@ local function CreateMainFrame()
             local rec = AlterArenaDB.players[key]
             local name = (rec and rec.name) or key
             local count = (rec and rec.matches and #rec.matches) or 0
-            local c = GetClassColor(rec and rec.class)
+            local c = ns.GetClassColor(rec and rec.class)
             local label = string.format("|c%s%s|r |cff666677(%d)|r", c.colorStr or "ffffffff", name, count)
             
             table.insert(items, {
@@ -513,29 +625,24 @@ local function CreateMainFrame()
     end)
     frame.moreFiltersBtn = moreBtn
 
+    -- Roster tools (shown on Overview, hidden on History)
     local columnsBtn = ns.CreateStyledButton(navBar, "Columns", 90, 26)
     columnsBtn:SetPoint("RIGHT", navBar, "RIGHT", 0, 0)
     columnsBtn:SetScript("OnClick", function(self)
-        local cv = GetColumnVisibility()
-        local items = {}
-        for _, def in ipairs(COLUMN_DEFS) do
-            if not def.always then
-                local defId = def.id
-                local iconPrefix = GetColumnIconMarkup(def, 14) or ""
-                table.insert(items, {
-                    type  = "radio",
-                    label = iconPrefix .. def.title,
-                    checked = function() return cv[defId] == true end,
-                    onClick = function()
-                        cv[defId] = not cv[defId]
-                        ns.RefreshUI()
-                    end,
-                })
-            end
+        if ns.OpenColumnsDropdown then
+            ns.OpenColumnsDropdown(self)
         end
-        ns.OpenDropdown(self, items)
     end)
     frame.columnsBtn = columnsBtn
+
+    local sortBtn = ns.CreateStyledButton(navBar, "Sort: Name", 130, 26)
+    sortBtn:SetPoint("RIGHT", columnsBtn, "LEFT", -6, 0)
+    sortBtn:SetScript("OnClick", function(self)
+        if ns.OpenRosterSortDropdown then
+            ns.OpenRosterSortDropdown(self)
+        end
+    end)
+    frame.sortBtn = sortBtn
 
     frame.tabRoster:SetScript("OnClick", function()
         ui.activeTab = "roster"
@@ -546,21 +653,11 @@ local function CreateMainFrame()
         ns.RefreshUI()
     end)
 
-    -- Main Content Area (Scroll Frame)
-    local scrollFrame = CreateFrame("ScrollFrame", "AlterArenaScrollFrame", frame, "UIPanelScrollFrameTemplate")
+    -- Main Content Area (custom scrollbar)
+    local scrollFrame, content = ns.CreateScrollFrame(frame)
     scrollFrame:SetPoint("TOPLEFT", 14, -84)
-    scrollFrame:SetPoint("BOTTOMRIGHT", -32, 14)
-
-    -- Dark styled scrollbar
-    local scrollBarName = scrollFrame:GetName() .. "ScrollBar"
-    local scrollBar = _G[scrollBarName]
-    if scrollBar then
-        scrollBar:SetAlpha(0.7)
-    end
-
-    local content = CreateFrame("Frame", nil, scrollFrame)
-    content:SetSize(ui.FRAME_WIDTH - 50, 1)
-    scrollFrame:SetScrollChild(content)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -18, 14)
+    content:SetSize(ui.FRAME_WIDTH - 40, 1)
 
     frame.scrollFrame = scrollFrame
     frame.content = content
@@ -660,15 +757,20 @@ function ns.RefreshUI()
     end
 end
 
-function ns.ToggleUI()
+--- Ensure the main frame exists (create only; do not toggle visibility).
+function ns.EnsureMainFrame()
     if not mainFrame then
         mainFrame = CreateMainFrame()
     end
+    return mainFrame
+end
 
-    if mainFrame:IsShown() then
-        mainFrame:Hide()
+function ns.ToggleUI()
+    local frame = ns.EnsureMainFrame()
+    if frame:IsShown() then
+        frame:Hide()
     else
-        mainFrame:Show()
+        frame:Show()
         ns.RefreshUI()
     end
 end

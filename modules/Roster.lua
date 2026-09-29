@@ -32,6 +32,22 @@ local DEFAULT_COLUMNS = {
     conquest = true, honor = false, tokens = false, record = true,
 }
 
+local SORT_OPTIONS = {
+    { id = "name",    label = "Name" },
+    { id = "rating",  label = "Highest Rating" },
+    { id = "recent",  label = "Recent" },
+    { id = "winrate", label = "Win Rate" },
+}
+
+local SORT_LABELS = {}
+for _, opt in ipairs(SORT_OPTIONS) do
+    SORT_LABELS[opt.id] = opt.label
+end
+
+function ns.GetRosterSortLabel()
+    local mode = ui.rosterSortMode or "name"
+    return SORT_LABELS[mode] or "Name"
+end
 
 
 
@@ -72,6 +88,49 @@ local function GetColumnVisibility()
     end
     return cv
 end
+
+function ns.OpenRosterSortDropdown(anchor)
+    local items = {}
+    for _, opt in ipairs(SORT_OPTIONS) do
+        local id = opt.id
+        table.insert(items, {
+            type  = "radio",
+            label = opt.label,
+            checked = function() return (ui.rosterSortMode or "name") == id end,
+            onClick = function()
+                ui.rosterSortMode = id
+                if ns.RefreshUI then ns.RefreshUI() end
+            end,
+        })
+    end
+    if ns.OpenDropdown then
+        ns.OpenDropdown(anchor, items)
+    end
+end
+
+function ns.OpenColumnsDropdown(anchor)
+    local cv = GetColumnVisibility()
+    local items = {}
+    for _, def in ipairs(COLUMN_DEFS) do
+        if not def.always then
+            local defId = def.id
+            local iconPrefix = GetColumnIconMarkup(def, 14) or ""
+            table.insert(items, {
+                type  = "radio",
+                label = iconPrefix .. def.title,
+                checked = function() return cv[defId] == true end,
+                onClick = function()
+                    cv[defId] = not cv[defId]
+                    if ns.RefreshUI then ns.RefreshUI() end
+                end,
+            })
+        end
+    end
+    if ns.OpenDropdown then
+        ns.OpenDropdown(anchor, items)
+    end
+end
+
 
 local function GetVisibleColumns()
     local cv = GetColumnVisibility()
@@ -198,8 +257,13 @@ end
 function ns.RenderRosterView(frame)
     frame.filterBar:Hide()
     if frame.columnsBtn then frame.columnsBtn:Show() end
+    if frame.sortBtn then
+        frame.sortBtn:Show()
+        local label = ns.GetRosterSortLabel and ns.GetRosterSortLabel() or "Name"
+        frame.sortBtn:SetText("Sort: " .. label)
+    end
     if frame.historyFooter then frame.historyFooter:Hide() end
-    frame.scrollFrame:SetPoint("BOTTOMRIGHT", -32, 14)
+    frame.scrollFrame:SetPoint("BOTTOMRIGHT", -18, 14)
     ui.selectedMatch = nil
     
     ns.SetTabActive(frame.tabRoster, true)
@@ -282,48 +346,9 @@ function ns.RenderRosterView(frame)
         card:Show()
     end
 
-    -- Sort bar
+    -- Sort lives in the nav bar dropdown (frame.sortBtn), not inline.
+    -- Small gap under the stat cards before the table header.
     statY = statY - 54
-
-    local sortBar = frame.sortBar
-    if not sortBar then
-        sortBar = CreateFrame("Frame", nil, frame.content)
-        sortBar:SetSize(ui.FRAME_WIDTH - 52, 24)
-        frame.sortBar = sortBar
-
-        local lbl = sortBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        lbl:SetPoint("LEFT", 0, 0)
-        lbl:SetText("|cff888899Sort:|r")
-
-        local options = {
-            { id = "name",    text = "Name" },
-            { id = "rating",  text = "Highest Rating" },
-            { id = "recent",  text = "Recent" },
-            { id = "winrate", text = "Win Rate" },
-        }
-
-        local prev = lbl
-        frame.sortButtons = {}
-        for _, opt in ipairs(options) do
-            local btn = ns.CreateStyledButton(sortBar, opt.text, 100, 20)
-            btn:SetPoint("LEFT", prev, "RIGHT", 6, 0)
-            btn.sortId = opt.id
-            btn:SetScript("OnClick", function(self)
-                ui.rosterSortMode = self.sortId
-                ns.RefreshUI()
-            end)
-            frame.sortButtons[opt.id] = btn
-            prev = btn
-        end
-    end
-    sortBar:SetPoint("TOPLEFT", 2, statY)
-    sortBar:Show()
-
-    for id, btn in pairs(frame.sortButtons) do
-        ns.SetTabActive(btn, id == ui.rosterSortMode)
-    end
-
-    statY = statY - 30
 
     -- Table Columns Header ( dynamic based on visible columns)
     local header = frame.rosterHeader
@@ -787,4 +812,7 @@ function ns.RenderRosterView(frame)
     end
 
     frame.content:SetHeight(math.abs(rowY) + 20)
+    if frame.scrollFrame and frame.scrollFrame.UpdateThumb then
+        frame.scrollFrame:UpdateThumb()
+    end
 end

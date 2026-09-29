@@ -9,37 +9,7 @@ local ui = ns.ui
 -- Curated lists of rated-PvP maps. Names must match GetRealZoneText() output.
 -- If a name here doesn't match, that radio just yields zero results until
 -- the user plays on it and the dynamic discovery picks up the real string.
-local KNOWN_ARENA_MAPS = {
-    "Hook Point",
-    "Blade's Edge Arena",
-    "Ruins of Lordaeron",
-    "The Robodrome",
-    "Ashamane's Fall",
-    "Empyrean Domain",
-    "Nokhudon Proving Grounds",
-    "Maldraxxus Coliseum",
-    "The Tiger's Peak",
-    "Enigma Crucible",
-    "Cage of Carnage",
-    "Tol'viron Arena",
-    "Nagrand Arena",
-    "Mugambala",
-    "Black Rook Hold Arena",
-}
-
-local KNOWN_BG_MAPS = {
-    "Warsong Gulch",
-    "Arathi Basin",
-    "Eye of the Storm",
-    "Temple of Kotmogu",
-    "Silvershard Mines",
-    "Deepwind Gorge",
-    "Twin Peaks",
-    "Battle for Gilneas",
-    "Isle of Conquest",
-    "Alterac Valley",
-    "Seething Shore",
-}
+-- ns.KNOWN_ARENA_MAPS / ns.KNOWN_BG_MAPS: see Data/Maps.lua
 
 
 
@@ -132,7 +102,7 @@ function ns.ShowMoreFilters(anchor)
 
     -- Arena maps submenu
     local arenaItems = {}
-    for _, mp in ipairs(KNOWN_ARENA_MAPS) do
+    for _, mp in ipairs(ns.KNOWN_ARENA_MAPS) do
         local mpm = mp
         table.insert(arenaItems, {
             type  = "radio",
@@ -144,7 +114,7 @@ function ns.ShowMoreFilters(anchor)
 
     -- BG maps submenu
     local bgItems = {}
-    for _, mp in ipairs(KNOWN_BG_MAPS) do
+    for _, mp in ipairs(ns.KNOWN_BG_MAPS) do
         local mpm = mp
         table.insert(bgItems, {
             type  = "radio",
@@ -159,8 +129,8 @@ function ns.ShowMoreFilters(anchor)
     do
         local effectiveKey = ui.selectedCharKey or (ns.GetPlayerKey and ns.GetPlayerKey())
         local seen = {}
-        for _, mp in ipairs(KNOWN_ARENA_MAPS) do seen[mp] = true end
-        for _, mp in ipairs(KNOWN_BG_MAPS)   do seen[mp] = true end
+        for _, mp in ipairs(ns.KNOWN_ARENA_MAPS) do seen[mp] = true end
+        for _, mp in ipairs(ns.KNOWN_BG_MAPS)   do seen[mp] = true end
 
         local extras = {}
         local rec = effectiveKey and AlterArenaDB.players[effectiveKey]
@@ -270,6 +240,7 @@ function ns.RenderHistoryView(frame)
     if frame.sortBar then frame.sortBar:Hide() end
     frame.filterBar:Show()
     if frame.columnsBtn then frame.columnsBtn:Hide() end
+    if frame.sortBtn then frame.sortBtn:Hide() end
     ns.SetTabActive(frame.tabRoster, false)
     ns.SetTabActive(frame.tabHistory, true)
     ns.UpdateSettingsButtonState(frame)
@@ -505,7 +476,7 @@ function ns.RenderHistoryView(frame)
 
     if frame.historyFooter then
         frame.historyFooter:Show()
-        frame.scrollFrame:SetPoint("BOTTOMRIGHT", -32, 58)
+        frame.scrollFrame:SetPoint("BOTTOMRIGHT", -18, 58)
 
         -- Bottom Left 1: Current Session
         local sessWinPct = sessTotal > 0 and math.floor((sessWins / sessTotal) * 100) or 0
@@ -560,6 +531,9 @@ function ns.RenderHistoryView(frame)
 
     if total == 0 then
         frame.content:SetHeight(120)
+        if frame.scrollFrame and frame.scrollFrame.UpdateThumb then
+            frame.scrollFrame:UpdateThumb()
+        end
         return
     end
 
@@ -615,13 +589,19 @@ function ns.RenderHistoryView(frame)
                         local teamIcons = ""
                         if rData.team then
                             for _, ic in ipairs(rData.team) do
-                                teamIcons = teamIcons .. string.format("|T%s:16:16:0:0|t ", ic)
+                                local icon = type(ic) == "table" and (ic.icon or (ic.spec and ns.GetSpecIcon and ns.GetSpecIcon(ic.spec, ic.class))) or ic
+                                if icon then
+                                    teamIcons = teamIcons .. string.format("|T%s:16:16:0:0|t ", icon)
+                                end
                             end
                         end
                         local enemyIcons = ""
                         if rData.enemy then
                             for _, ic in ipairs(rData.enemy) do
-                                enemyIcons = enemyIcons .. string.format("|T%s:16:16:0:0|t ", ic)
+                                local icon = type(ic) == "table" and (ic.icon or (ic.spec and ns.GetSpecIcon and ns.GetSpecIcon(ic.spec, ic.class))) or ic
+                                if icon then
+                                    enemyIcons = enemyIcons .. string.format("|T%s:16:16:0:0|t ", icon)
+                                end
                             end
                         end
 
@@ -932,4 +912,7 @@ function ns.RenderHistoryView(frame)
     end
 
     frame.content:SetHeight(math.abs(rowY) + 20)
+    if frame.scrollFrame and frame.scrollFrame.UpdateThumb then
+        frame.scrollFrame:UpdateThumb()
+    end
 end

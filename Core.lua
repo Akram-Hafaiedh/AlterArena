@@ -29,74 +29,20 @@ local ADDON_NAME, ns = ...
 --   }
 -- }
 
-AlterArenaDB = AlterArenaDB or {}
+-- AlterArenaDB + DEFAULTS: see Core/Database.lua
 
-local DEFAULTS = {
-    players = {},
-    settings = {
-        enableQueueTimer = true,
-        debugMode = false,
-        disableCurrencyAlerts = false,
-        columns = {},
-        queueTimerSound = "pvpqueue",
-    },
-    schemaVersion = 2,
-}
+-- ns.CURRENCY: see Data/Currency.lua
 
--- =========================================================================
--- Currency IDs (Retail). Extend this table to add new currencies.
--- =========================================================================
-ns.CURRENCY = {
-    conquest = 1602,
-    honor    = 1792,   -- Current Honor currency (12.x)
-    tokens   = 2123,   -- Bloody Tokens (War Mode, 12.x)
-}
+-- ns.SOUNDS / ns.SOUND_BY_ID: see Data/Sounds.lua
 
--- =========================================================================
--- Sound library
--- =========================================================================
--- Prefer numeric SoundKit IDs from FrameXML SOUNDKIT (stable across renames).
--- Verified against BlizzardInterfaceResources SoundKit.lua / 12.x clients:
---   PVP_THROUGH_QUEUE = 8459   (actual queue-ready horn)
---   RAID_WARNING      = 8959
---   READY_CHECK       = 8960
---   ALARM_CLOCK_*     = 18871 / 12867 / 12889
--- Resolution: PlaySound(soundKit) → PlaySoundFile(file) → silent.
--- Stored by stable `id` so labels can change without breaking SavedVariables.
-ns.SOUNDS = {
-    { id = "none",           category = "PvP", label = "None" },
-    -- Real queue-ready sound (was incorrectly mapped to RAID_WARNING 8959)
-    { id = "pvpqueue",       category = "PvP", label = "PvP Queue Ready",      soundKit = 8459 },  -- PVP_THROUGH_QUEUE
-    { id = "pvpenter",       category = "PvP", label = "PvP Enter Queue",      soundKit = 8458 },  -- PVP_ENTER_QUEUE
-    { id = "raidwarning",    category = "PvP", label = "Raid Warning",         soundKit = 8959 },  -- RAID_WARNING
-    { id = "readycheck",     category = "PvP", label = "Ready Check",          soundKit = 8960 },  -- READY_CHECK
-    { id = "lfgrolecheck",   category = "PvP", label = "LFG Role Check",       soundKit = 17317 }, -- LFG_ROLE_CHECK
-    { id = "bgcountdown",    category = "PvP", label = "BG Countdown Finish",  soundKit = 25478 }, -- UI_BATTLEGROUND_COUNTDOWN_FINISHED
-    { id = "alarm1",         category = "PvP", label = "Alarm Clock 1",        soundKit = 18871 }, -- ALARM_CLOCK_WARNING_1
-    { id = "alarm2",         category = "PvP", label = "Alarm Clock 2",        soundKit = 12867 }, -- ALARM_CLOCK_WARNING_2
-    { id = "alarm3",         category = "PvP", label = "Alarm Clock 3",        soundKit = 12889 }, -- ALARM_CLOCK_WARNING_3
-    { id = "bossemote",      category = "PvP", label = "Boss Emote Warning",   soundKit = 12197 }, -- RAID_BOSS_EMOTE_WARNING
-    { id = "raidwhisper",    category = "PvP", label = "Raid Whisper Warning", soundKit = 37666 }, -- UI_RAID_BOSS_WHISPER_WARNING
-
-    { id = "achievement",    category = "UI",  label = "Achievement",          soundKit = 13832 }, -- ACHIEVEMENT_MENU_OPEN
-    { id = "bnettoast",      category = "UI",  label = "Battle.net Toast",     soundKit = 18019 }, -- UI_BNET_TOAST
-    { id = "questcomplete",  category = "UI",  label = "Auto Quest Complete",  soundKit = 23404 }, -- UI_AUTO_QUEST_COMPLETE
-    { id = "ig_pvp_update",  category = "UI",  label = "PvP Update",           soundKit = 4574 },  -- IG_PVP_UPDATE
-    { id = "map_ping",       category = "UI",  label = "Map Ping",             soundKit = 3175 },  -- MAP_PING
-    { id = "tell_message",   category = "UI",  label = "Tell Message",         soundKit = 3081 },  -- TELL_MESSAGE
-}
-
-ns.SOUND_BY_ID = {}
-for _, s in ipairs(ns.SOUNDS) do
-    ns.SOUND_BY_ID[s.id] = s
-end
-
--- Plays a sound entry by id. Safe to call anywhere; silent on failure.
+-- Plays a sound entry by id. Prefers SOUNDKIT name resolution, Master channel.
+-- PlaySound rarely errors, so "ok" from pcall is not proof the kit exists —
+-- we still try name → numeric → file in order.
 function ns.PlaySoundById(id)
     if not id or id == "none" then
         return false
     end
-    local entry = ns.SOUND_BY_ID[id]
+    local entry = ns.SOUND_BY_ID and ns.SOUND_BY_ID[id]
     if not entry then
         if AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.debugMode then
             print("|cff40c0ff[AA-SOUND]|r unknown id:", tostring(id))
@@ -104,79 +50,45 @@ function ns.PlaySoundById(id)
         return false
     end
 
-    local played = false
     local detail = {}
-
-    -- Path 1: numeric soundKit
-    if type(entry.soundKit) == "number" and PlaySound then
-        local ok = pcall(PlaySound, entry.soundKit)
-        played = ok and true or false
-        table.insert(detail, "numeric=" .. tostring(played))
+    local kitID, source = nil, nil
+    if ns.ResolveSoundKit then
+        kitID, source = ns.ResolveSoundKit(entry)
+    elseif type(entry.soundKit) == "number" then
+        kitID, source = entry.soundKit, "numeric"
     end
 
-    -- Path 2: string soundKit via SOUNDKIT / Enum.SoundKitID
-    if not played and type(entry.soundKit) == "string" then
-        local name = entry.soundKit
-        local kitID
-        if SOUNDKIT and SOUNDKIT[name] then
-            kitID = SOUNDKIT[name]
-            table.insert(detail, "SOUNDKIT=" .. tostring(kitID))
+    local function TryPlayKit(kit)
+        if not kit or not PlaySound then return false end
+        -- Channel "Master" so the sound is audible even if Dialog is low.
+        local ok = pcall(PlaySound, kit, "Master")
+        if not ok then
+            ok = pcall(PlaySound, kit)
         end
-        if not kitID and Enum and Enum.SoundKitID and Enum.SoundKitID[name] then
-            kitID = Enum.SoundKitID[name]
-            table.insert(detail, "Enum=" .. tostring(kitID))
-        end
-        if kitID and PlaySound then
-            local ok = pcall(PlaySound, kitID)
-            played = ok and true or false
-            table.insert(detail, "play=" .. tostring(played))
-        end
+        return ok and true or false
     end
 
-    -- Path 3: explicit numeric fallback
-    if not played and entry.fallbackNumeric and PlaySound then
-        local ok = pcall(PlaySound, entry.fallbackNumeric)
-        played = ok and true or false
-        table.insert(detail, "fbNum=" .. tostring(played))
+    local played = false
+    if kitID then
+        played = TryPlayKit(kitID)
+        table.insert(detail, string.format("%s=%s play=%s", tostring(source), tostring(kitID), tostring(played)))
+    else
+        table.insert(detail, "unresolved")
     end
 
-    -- Path 4: file path
+    -- File path fallback (rare)
     if not played and entry.file and PlaySoundFile then
-        local ok = pcall(PlaySoundFile, entry.file)
+        local ok = pcall(PlaySoundFile, entry.file, "Master")
         played = ok and true or false
         table.insert(detail, "file=" .. tostring(played))
     end
 
-    if AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.debugMode then
-        print("|cff40c0ff[AA-SOUND]|r", id,
-              "played=" .. tostring(played),
-              table.concat(detail, " "))
+    if AlterArenaDB and AlterArenaDB.settings and (
+        AlterArenaDB.settings.debugMode or AlterArenaDB.settings.mirrorDebugChat
+    ) then
+        print("|cff40c0ff[AA-SOUND]|r", id, table.concat(detail, " "))
     end
     return played
-end
-
-local function EnsureDBDefaults()
-    for key, value in pairs(DEFAULTS) do
-        if AlterArenaDB[key] == nil then
-            AlterArenaDB[key] = value
-        end
-    end
-    if AlterArenaDB.schemaVersion == nil then
-        AlterArenaDB.schemaVersion = 1
-    end
-    AlterArenaDB.settings = AlterArenaDB.settings or {}
-    if AlterArenaDB.settings.enableQueueTimer == nil then
-        AlterArenaDB.settings.enableQueueTimer = true
-    end
-    if AlterArenaDB.settings.debugMode == nil then
-        AlterArenaDB.settings.debugMode = false
-    end
-    if AlterArenaDB.settings.disableCurrencyAlerts == nil then
-        AlterArenaDB.settings.disableCurrencyAlerts = false
-    end
-    if AlterArenaDB.settings.queueTimerSound == nil then
-        AlterArenaDB.settings.queueTimerSound = "pvpqueue"
-    end
 end
 
 -- Cached at load so filter logic can run synchronously without pcall noise.
@@ -210,133 +122,12 @@ function ns.RefreshCurrentSeason()
     end
 end
 
-function ns.GetPlayerKey()
-    local name = UnitName("player")
-    local realm = GetRealmName()
-    return string.format("%s-%s", name, realm)
-end
-
--- Returns a snapshot of the current character's tracked currencies.
--- Safe to call anywhere: returns nil if the API isn't available, and
--- silently skips any currency the client doesn't recognise.
-function ns.GetCurrencySnapshot()
-    if not C_CurrencyInfo or not C_CurrencyInfo.GetCurrencyInfo then return nil end
-    local snap = {}
-    for key, id in pairs(ns.CURRENCY) do
-        local ok, info = pcall(C_CurrencyInfo.GetCurrencyInfo, id)
-        if ok and info and (info.quantity ~= nil or info.iconFileID) then
-            snap[key] = {
-                amount = info.quantity or 0,
-                max    = info.maxQuantity or 0,
-                totalEarned = info.totalEarned or 0,
-                name   = info.name,
-                icon   = info.iconFileID,
-            }
-        end
-    end
-    return snap
-end
-
--- Refreshes the currency cache on the current character's record.
--- Called on load and after any PvP rating stats update (which also fires
--- when currencies change).
-function ns.RefreshPlayerCurrency()
-    local rec = ns.EnsurePlayerRecord()
-    local snap = ns.GetCurrencySnapshot()
-    if not snap or not next(snap) then return end
-    rec.currency = rec.currency or {}
-    local now = time()
-    for key, data in pairs(snap) do
-        rec.currency[key] = {
-            amount  = data.amount,
-            max     = data.max,
-            totalEarned = data.totalEarned,
-            updated = now,
-        }
-    end
-end
-
--- rating model: bracketRatings and specStats are treated as a *cache* rebuilt from
--- (a) live GetPersonalRatedInfo for the current character
--- (b) match history for everyone else
--- Any prior seeding is discarded.
-function ns.MigrateRatings()
-    if not AlterArenaDB or not AlterArenaDB.players then return 0 end
-    local cleared = 0
-    for _, rec in pairs(AlterArenaDB.players) do
-        if rec.bracketRatings and next(rec.bracketRatings) then
-            rec.bracketRatings = {}
-            cleared = cleared + 1
-        end
-        if rec.specStats and next(rec.specStats) then
-            rec.specStats = {}
-            cleared = cleared + 1
-        end
-        -- intentionally DO NOT touch rec.matches: those are event records
-    end
-
-    return cleared
-end
-
--- Debug logging, gated behind AlterArenaDB.settings.debugMode
+-- Debug logging: full implementation in modules/Debug.lua (ns.DebugLog / ns.DebugPrint).
+-- Stub here so early Core calls before Debug.lua loads still work.
 function ns.DebugPrint(...)
     if AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.debugMode then
         print("|cff40c0ff[AA-DEBUG]|r", ...)
     end
-end
-
-function ns.EnsurePlayerRecord()
-    local key = ns.GetPlayerKey()
-    local players = AlterArenaDB.players
-
-    if not players[key] then
-        local _, class = UnitClass("player")
-        local faction = UnitFactionGroup("player")
-        players[key] = {
-            name = UnitName("player"),
-            realm = GetRealmName(),
-            class = class,
-            faction = faction,
-            matches = {},
-            bracketRatings = {},
-            peaks = {},
-            currency = {},
-        }
-    end
-
-    local rec = players[key]
-    rec.bracketRatings = rec.bracketRatings or {}
-    rec.peaks = rec.peaks or {}
-
-    -- Keep spec and specIcon updated for current character
-    if GetSpecialization and GetSpecializationInfo then
-        local specIdx = GetSpecialization()
-        if specIdx then
-            local _, specName, _, specIcon = GetSpecializationInfo(specIdx)
-            rec.spec = specName
-            rec.specIcon = specIcon
-        end
-    end
-
-    return rec
-end
-
--- Records a new peak for a bracket key if the current rating exceeds the
--- stored peak. Peaks live outside bracketRatings so they survive cache
--- migrations and /aa reset.
-function ns.UpdatePeak(rec, key, rating)
-    if not rec or not key or not rating or rating <= 0 then return end
-    rec.peaks = rec.peaks or {}
-    local p = rec.peaks[key]
-    if not p or rating > (p.rating or 0) then
-        rec.peaks[key] = { rating = rating, timestamp = time() }
-    end
-end
-
-function ns.GetPeak(rec, key)
-    if not rec or not rec.peaks or not key then return nil end
-    local p = rec.peaks[key]
-    return p and p.rating or nil
 end
 
 function ns.RequestPVPStats()
@@ -749,7 +540,7 @@ eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 eventFrame:RegisterEvent("PVP_RATED_STATS_UPDATE")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
-        EnsureDBDefaults()
+        ns.EnsureDBDefaults()
         ns.RefreshCurrentSeason()
         ns.RefreshPlayerCurrency()
         ns.CheckCurrencyAlerts()
@@ -776,6 +567,9 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
             print(string.format("|cff40c0ffAlterArena|r: Rating cache rebuilt (cleared %d record(s)). Rebuilding from live API and match history…", cleared))
         end
 
+        if ns.UI and ns.UI.Init then ns.UI.Init() end
+        if ns.InitDebug then ns.InitDebug() end
+        if ns.InitMinimap then ns.InitMinimap() end
         print("|cff40c0ffAlterArena|r loaded. Type /alterarena (or /aa) to view your history.")
     elseif event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_SPECIALIZATION_CHANGED" or event == "PVP_RATED_STATS_UPDATE" then
         if AlterArenaDB and AlterArenaDB.players then
@@ -834,11 +628,52 @@ SlashCmdList["ALTERARENA"] = function(msg)
             local statusStr = newState and "|cff22c55eENABLED|r" or "|cffef4444DISABLED|r"
             print(string.format("|cff40c0ffAlterArena|r: Queue timer overlay %s.", statusStr))
         end
-    elseif msg == "debug" then
-        if AlterArenaDB and AlterArenaDB.settings then
-            AlterArenaDB.settings.debugMode = not AlterArenaDB.settings.debugMode
-            local statusStr = AlterArenaDB.settings.debugMode and "|cff22c55eENABLED|r" or "|cffef4444DISABLED|r"
-            print(string.format("|cff40c0ffAlterArena|r: Debug mode %s.", statusStr))
+    elseif msg == "debug" or msg == "debugwindow" or msg == "dbg"
+        or (msg and (msg:match("^debug%s") or msg:match("^dbg%s"))) then
+        -- /aa debug          → toggle debug window
+        -- /aa debug on|off   → force flag
+        -- /aa debug test     → run self-test
+        local sub = msg:match("^debug%s+(.+)$") or msg:match("^dbg%s+(.+)$")
+        if sub == "on" then
+            if AlterArenaDB and AlterArenaDB.settings then
+                AlterArenaDB.settings.debugMode = true
+                print("|cff40c0ffAlterArena|r: Debug mode |cff22c55eENABLED|r.")
+            end
+        elseif sub == "off" then
+            if AlterArenaDB and AlterArenaDB.settings then
+                AlterArenaDB.settings.debugMode = false
+                print("|cff40c0ffAlterArena|r: Debug mode |cffef4444DISABLED|r.")
+            end
+        elseif sub == "test" or sub == "selftest" then
+            if ns.RunDebugSelfTest then
+                ns.RunDebugSelfTest()
+            else
+                print("|cff40c0ffAlterArena|r: Debug module not loaded.")
+            end
+            if ns.ToggleDebugWindow then ns.ToggleDebugWindow(true) end
+        elseif sub == "toggle" then
+            if AlterArenaDB and AlterArenaDB.settings then
+                AlterArenaDB.settings.debugMode = not AlterArenaDB.settings.debugMode
+                local statusStr = AlterArenaDB.settings.debugMode and "|cff22c55eENABLED|r" or "|cffef4444DISABLED|r"
+                print(string.format("|cff40c0ffAlterArena|r: Debug mode %s.", statusStr))
+            end
+        else
+            -- bare /aa debug → open/close debug window (and enable logging)
+            if AlterArenaDB and AlterArenaDB.settings and not AlterArenaDB.settings.debugMode then
+                AlterArenaDB.settings.debugMode = true
+                print("|cff40c0ffAlterArena|r: Debug mode |cff22c55eENABLED|r (window open).")
+            end
+            if ns.ToggleDebugWindow then
+                ns.ToggleDebugWindow()
+            else
+                print("|cff40c0ffAlterArena|r: Debug module not loaded.")
+            end
+        end
+    elseif msg == "minimap" then
+        if ns.ToggleMinimap then
+            local shown = ns.ToggleMinimap()
+            print(string.format("|cff40c0ffAlterArena|r: Minimap button %s.",
+                shown and "|cff22c55eSHOWN|r" or "|cffef4444HIDDEN|r"))
         end
     elseif msg == "settings" or msg == "config" or msg == "options" then
         if ns.OpenSettings then
