@@ -347,6 +347,15 @@ end
 
 
 local function EnsureDebugFrame()
+    -- Drop stale frames from older builds that lack tabs
+    if debugFrame and not debugFrame.ShowTab then
+        debugFrame:Hide()
+        debugFrame:SetParent(nil)
+        debugFrame = nil
+        if _G.AlterArenaDebugFrame and not _G.AlterArenaDebugFrame.ShowTab then
+            _G.AlterArenaDebugFrame = nil
+        end
+    end
     if debugFrame then return debugFrame end
 
     local f = CreateFrame("Frame", "AlterArenaDebugFrame", UIParent, "BackdropTemplate")
@@ -403,43 +412,98 @@ local function EnsureDebugFrame()
         self:SetBackdropBorderColor(0.22, 0.23, 0.28, 1)
     end)
 
-    -- Checklist header
-    local checkHeader = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    checkHeader:SetPoint("TOPLEFT", 14, -42)
+    -- Tabs (ArtisansCodex-style): General | Match
+    f.activeTab = "general"
+
+
+    local function StyleTab(btn, active)
+        if not btn then return end
+        if active then
+            btn:SetBackdropColor(0.22, 0.18, 0.08, 1)
+            btn:SetBackdropBorderColor(0.95, 0.82, 0.25, 1)
+            if btn.text then btn.text:SetTextColor(1, 0.92, 0.55) end
+        else
+            btn:SetBackdropColor(0.12, 0.13, 0.16, 0.95)
+            btn:SetBackdropBorderColor(0.35, 0.30, 0.15, 0.9)
+            if btn.text then btn.text:SetTextColor(0.85, 0.85, 0.85) end
+        end
+    end
+
+    -- Tab row under title (same idea as ArtisansCodex Log | Recipes | Specs)
+    local function MakeTabBtn(label, key)
+        local btn = CreateFrame("Button", nil, f, "BackdropTemplate")
+        btn:SetSize(100, 26)
+        btn:SetBackdrop({
+            bgFile = "Interface/Buttons/WHITE8X8",
+            edgeFile = "Interface/Buttons/WHITE8X8",
+            edgeSize = 1,
+        })
+        btn:SetBackdropColor(0.12, 0.13, 0.16, 0.95)
+        btn:SetBackdropBorderColor(0.35, 0.30, 0.15, 0.9)
+        btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        btn.text:SetPoint("CENTER")
+        btn.text:SetText(label)
+        btn.tabKey = key
+        btn:SetScript("OnClick", function()
+            if f.ShowTab then f:ShowTab(key) end
+        end)
+        btn:SetScript("OnEnter", function(self)
+            if f.activeTab ~= key then
+                self:SetBackdropColor(0.18, 0.19, 0.22, 1)
+            end
+        end)
+        btn:SetScript("OnLeave", function(self)
+            StyleTab(self, f.activeTab == key)
+        end)
+        return btn
+    end
+
+    f.tabGeneral = MakeTabBtn("Log", "general")
+    f.tabGeneral:SetPoint("TOPLEFT", 14, -38)
+    f.tabMatch = MakeTabBtn("Match", "match")
+    f.tabMatch:SetPoint("LEFT", f.tabGeneral, "RIGHT", 8, 0)
+
+    -- General panel: checklist + log
+    local generalPanel = CreateFrame("Frame", nil, f)
+    generalPanel:SetPoint("TOPLEFT", 0, -68)
+    generalPanel:SetPoint("BOTTOMRIGHT", 0, 48)
+    f.generalPanel = generalPanel
+
+    local checkHeader = generalPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    checkHeader:SetPoint("TOPLEFT", 14, -2)
     checkHeader:SetText("|cff888899Checklist|r")
 
     local checkScroll, checkChild
     if ns.CreateScrollFrame then
-        checkScroll, checkChild = ns.CreateScrollFrame(f)
+        checkScroll, checkChild = ns.CreateScrollFrame(generalPanel)
     else
-        checkScroll = CreateFrame("ScrollFrame", nil, f)
+        checkScroll = CreateFrame("ScrollFrame", nil, generalPanel)
         checkChild = CreateFrame("Frame", nil, checkScroll)
         checkScroll:SetScrollChild(checkChild)
         checkScroll:EnableMouseWheel(true)
     end
-    checkScroll:SetPoint("TOPLEFT", 12, -60)
-    checkScroll:SetPoint("BOTTOMLEFT", 12, 52)
+    checkScroll:SetPoint("TOPLEFT", 12, -20)
+    checkScroll:SetPoint("BOTTOMLEFT", 12, 4)
     checkScroll:SetWidth(240)
     checkChild:SetWidth(220)
     f.checkScroll = checkScroll
     f.checkChild = checkChild
 
-    -- Log header
-    local logHeader = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local logHeader = generalPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     logHeader:SetPoint("TOPLEFT", checkScroll, "TOPRIGHT", 28, 18)
     logHeader:SetText("|cff888899Log|r")
 
     local logScroll, logChild
     if ns.CreateScrollFrame then
-        logScroll, logChild = ns.CreateScrollFrame(f)
+        logScroll, logChild = ns.CreateScrollFrame(generalPanel)
     else
-        logScroll = CreateFrame("ScrollFrame", nil, f)
+        logScroll = CreateFrame("ScrollFrame", nil, generalPanel)
         logChild = CreateFrame("Frame", nil, logScroll)
         logScroll:SetScrollChild(logChild)
         logScroll:EnableMouseWheel(true)
     end
     logScroll:SetPoint("TOPLEFT", checkScroll, "TOPRIGHT", 24, 0)
-    logScroll:SetPoint("BOTTOMRIGHT", -18, 52)
+    logScroll:SetPoint("BOTTOMRIGHT", -18, 4)
     logChild:SetWidth(400)
     f.logScroll = logScroll
     f.logChild = logChild
@@ -451,6 +515,53 @@ local function EnsureDebugFrame()
     logText:SetWordWrap(true)
     logText:SetNonSpaceWrap(true)
     f.logText = logText
+
+    -- Match panel: live probe + match-only log
+    local matchPanel = CreateFrame("Frame", nil, f)
+    matchPanel:SetPoint("TOPLEFT", 0, -68)
+    matchPanel:SetPoint("BOTTOMRIGHT", 0, 48)
+    matchPanel:Hide()
+    f.matchPanel = matchPanel
+
+    local matchLiveHeader = matchPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    matchLiveHeader:SetPoint("TOPLEFT", 14, -2)
+    matchLiveHeader:SetText("|cff888899Live state|r")
+
+    local matchLive = matchPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    matchLive:SetPoint("TOPLEFT", 14, -20)
+    matchLive:SetPoint("TOPRIGHT", -14, -20)
+    matchLive:SetJustifyH("LEFT")
+    matchLive:SetJustifyV("TOP")
+    matchLive:SetWordWrap(true)
+    matchLive:SetText("|cff666677Not in a match. Queue a shuffle — probes appear here.|r")
+    f.matchLiveText = matchLive
+
+    local matchLogHeader = matchPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    matchLogHeader:SetPoint("TOPLEFT", 14, -88)
+    matchLogHeader:SetText("|cff888899Match probes|r")
+
+    local matchScroll, matchChild
+    if ns.CreateScrollFrame then
+        matchScroll, matchChild = ns.CreateScrollFrame(matchPanel)
+    else
+        matchScroll = CreateFrame("ScrollFrame", nil, matchPanel)
+        matchChild = CreateFrame("Frame", nil, matchScroll)
+        matchScroll:SetScrollChild(matchChild)
+        matchScroll:EnableMouseWheel(true)
+    end
+    matchScroll:SetPoint("TOPLEFT", 12, -108)
+    matchScroll:SetPoint("BOTTOMRIGHT", -18, 4)
+    matchChild:SetWidth(680)
+    f.matchScroll = matchScroll
+    f.matchChild = matchChild
+
+    local matchLogText = matchChild:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    matchLogText:SetPoint("TOPLEFT", 4, -4)
+    matchLogText:SetJustifyH("LEFT")
+    matchLogText:SetJustifyV("TOP")
+    matchLogText:SetWordWrap(true)
+    matchLogText:SetNonSpaceWrap(true)
+    f.matchLogText = matchLogText
 
     function f:RefreshLog()
         local lines = {}
@@ -464,33 +575,81 @@ local function EnsureDebugFrame()
 
         local h = math.max(logText:GetStringHeight() + 12, logScroll:GetHeight() or 100)
         logChild:SetHeight(h)
-        logChild:SetWidth(math.max((logScroll:GetWidth() or 260) - 10, 100))
-
-        if logScroll.UpdateThumb then logScroll:UpdateThumb() end
-
-        -- Auto-scroll to bottom
-        local viewH = logScroll:GetHeight() or 1
-        local childH = logChild:GetHeight() or 1
-        local maxScroll = math.max(childH - viewH, 0)
-        logScroll:SetVerticalScroll(maxScroll)
         if logScroll.UpdateThumb then logScroll:UpdateThumb() end
     end
 
-    logScroll:SetScript("OnSizeChanged", function()
-        if f.RefreshLog then f:RefreshLog() end
-    end)
+    function f:RefreshMatchTab()
+        -- Live summary from MatchTracker dump (first lines) or last probe
+        local live = "|cff666677Not in a match.|r"
+        if ns.GetMatchTrackerDump then
+            local dump = ns.GetMatchTrackerDump()
+            if dump and not dump:find("pendingMatch: nil", 1, true) then
+                -- Show a short preview (first ~8 lines)
+                local preview = {}
+                local n = 0
+                for line in string.gmatch(dump, "[^\n]+") do
+                    n = n + 1
+                    if n > 1 and n <= 9 then
+                        preview[#preview + 1] = line
+                    end
+                    if n > 9 then break end
+                end
+                live = table.concat(preview, "\n")
+            elseif ns.GetLastMatchProbe and ns.GetLastMatchProbe() ~= "" then
+                live = ns.GetLastMatchProbe()
+            end
+        elseif ns.GetLastMatchProbe and ns.GetLastMatchProbe() ~= "" then
+            live = ns.GetLastMatchProbe()
+        end
+        matchLive:SetText(live)
+
+        -- Match-only log lines
+        local lines = {}
+        for i = 1, #logBuffer do
+            local e = logBuffer[i]
+            if e.text and e.text:find("%[MATCH%]", 1) then
+                lines[#lines + 1] = string.format("|cff666677%s|r  %s", e.t, e.text)
+            end
+        end
+        local body = #lines > 0 and table.concat(lines, "\n")
+            or "|cff666677No match probes yet. Play a rated match with Debug ON.|r"
+        matchLogText:SetWidth(math.max((matchScroll:GetWidth() or 400) - 14, 100))
+        matchLogText:SetText(body)
+        local h = math.max(matchLogText:GetStringHeight() + 12, matchScroll:GetHeight() or 100)
+        matchChild:SetHeight(h)
+        if matchScroll.UpdateThumb then matchScroll:UpdateThumb() end
+    end
+
+    function f:ShowTab(key)
+        self.activeTab = key or "general"
+        local isGeneral = self.activeTab == "general"
+        generalPanel:SetShown(isGeneral)
+        matchPanel:SetShown(not isGeneral)
+        StyleTab(f.tabGeneral, isGeneral)
+        StyleTab(f.tabMatch, not isGeneral)
+        -- Bottom button visibility
+        if f.btnSelfTest then f.btnSelfTest:SetShown(isGeneral) end
+        if f.btnClearLog then f.btnClearLog:SetShown(isGeneral) end
+        if f.btnCopyLog then f.btnCopyLog:SetShown(isGeneral) end
+        if f.btnDumpMatch then f.btnDumpMatch:SetShown(not isGeneral) end
+        if f.btnRefreshMatch then f.btnRefreshMatch:SetShown(not isGeneral) end
+        if f.btnCopyMatch then f.btnCopyMatch:SetShown(not isGeneral) end
+        if isGeneral then
+            self:RefreshChecklist()
+            self:RefreshLog()
+        else
+            self:RefreshMatchTab()
+        end
+    end
 
     function f:RefreshChecklist()
-        -- wipe previous rows
-        if checkChild.rows then
-            for _, row in ipairs(checkChild.rows) do
-                row:Hide()
-                row:SetParent(nil)
-            end
+        for _, row in ipairs(checkChild.rows or {}) do
+            row:Hide()
+            row:SetParent(nil)
         end
         checkChild.rows = {}
 
-        local run = ns.GetDebugRunForDisplay()
+        local run = ns.GetDebugRunForDisplay and ns.GetDebugRunForDisplay()
         local y = 4
         local steps = OrderedSteps(run)
         if #steps == 0 then
@@ -546,11 +705,17 @@ local function EnsureDebugFrame()
 
     function f:RefreshAll()
         RefreshToggleLabel()
-        self:RefreshChecklist()
-        self:RefreshLog()
+        if self.activeTab == "match" then
+            self:RefreshMatchTab()
+        else
+            self:RefreshChecklist()
+            self:RefreshLog()
+        end
     end
 
-    f:SetScript("OnShow", function(self) self:RefreshAll() end)
+    f:SetScript("OnShow", function(self)
+        self:ShowTab(self.activeTab or "general")
+    end)
 
     -- Bottom buttons
     local function MakeBtn(label, width)
@@ -596,14 +761,57 @@ local function EnsureDebugFrame()
         f:RefreshAll()
     end)
 
+    f.btnSelfTest = testBtn
+
+    -- Match-tab actions (shown only on Match tab)
+    local refreshMatchBtn = MakeBtn("Refresh", 80)
+    refreshMatchBtn:SetPoint("LEFT", testBtn, "RIGHT", 8, 0)
+    refreshMatchBtn:Hide()
+    refreshMatchBtn:SetScript("OnClick", function()
+        f:RefreshMatchTab()
+    end)
+    f.btnRefreshMatch = refreshMatchBtn
+
+    local dumpBtn = MakeBtn("Dump", 80)
+    dumpBtn:SetPoint("LEFT", refreshMatchBtn, "RIGHT", 8, 0)
+    dumpBtn:Hide()
+    dumpBtn:SetScript("OnClick", function()
+        local text
+        if ns.DumpMatchTrackerState then
+            text = ns.DumpMatchTrackerState()
+        else
+            text = "MatchTracker dump unavailable"
+            if ns.DebugLog then ns.DebugLog(text) end
+        end
+        f:RefreshMatchTab()
+        if ns.ShowDebugCopyPanel and text then
+            ns.ShowDebugCopyPanel(text, f)
+        end
+    end)
+    f.btnDumpMatch = dumpBtn
+
+    local copyMatchBtn = MakeBtn("Copy Dump", 90)
+    copyMatchBtn:SetPoint("LEFT", dumpBtn, "RIGHT", 8, 0)
+    copyMatchBtn:Hide()
+    copyMatchBtn:SetScript("OnClick", function()
+        local text = ns.GetMatchTrackerDump and ns.GetMatchTrackerDump() or ""
+        if ns.ShowDebugCopyPanel then
+            ns.ShowDebugCopyPanel(text, f)
+        end
+    end)
+    f.btnCopyMatch = copyMatchBtn
+
     local clearBtn = MakeBtn("Clear Log", 90)
     clearBtn:SetPoint("LEFT", testBtn, "RIGHT", 8, 0)
     clearBtn:SetScript("OnClick", function()
         ns.DebugClearLog()
+        f:RefreshAll()
     end)
+    f.btnClearLog = clearBtn
 
     local copyBtn = MakeBtn("Copy Log", 90)
     copyBtn:SetPoint("LEFT", clearBtn, "RIGHT", 8, 0)
+    f.btnCopyLog = copyBtn
     copyBtn:SetScript("OnClick", function()
         local parts = { "=== AlterArena Debug ===", "" }
         local run = ns.GetDebugRunForDisplay and ns.GetDebugRunForDisplay()
@@ -626,8 +834,17 @@ local function EnsureDebugFrame()
         ns.ShowDebugCopyPanel(text, f)
     end)
 
+    f:ShowTab("general")
+
     debugFrame = f
     return f
+end
+
+--- Called from MatchTracker probes so the Match tab stays live while open.
+function ns.RefreshMatchDebugTab()
+    if debugFrame and debugFrame:IsShown() and debugFrame.activeTab == "match" and debugFrame.RefreshMatchTab then
+        debugFrame:RefreshMatchTab()
+    end
 end
 
 function ns.ToggleDebugWindow(forceShow)
@@ -648,8 +865,6 @@ function ns.ToggleDebugWindow(forceShow)
 end
 
 function ns.InitDebug()
-    if AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.debugMode then
-        -- keep flag; window stays lazy
-    end
+    -- debugMode flag is read when logging; window stays lazy until /aa debug
     ns.DebugLog("Debug module loaded", { silent = true })
 end

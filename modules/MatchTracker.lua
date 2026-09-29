@@ -6,6 +6,171 @@ local ADDON_NAME, ns = ...
 -- is confirmed working in-client.
 
 local pendingMatch = nil
+local detectedPlayerSpecs = {} -- name/guid -> { class, spec, ... } live match cache
+
+----------------------------------------------------------------------
+-- Live match probe (feeds Debug window; no chat unless mirror is on)
+----------------------------------------------------------------------
+local lastProbeSummary = ""
+local lastScoreProbe = 0
+
+local function CountKeys(t)
+    if not t then return 0 end
+    local n = 0
+    for _ in pairs(t) do n = n + 1 end
+    return n
+end
+
+local function DescribeComp(list)
+    if not list or #list == 0 then return "0"
+    end
+    local parts = {}
+    for i, entry in ipairs(list) do
+        if type(entry) == "number" then
+            parts[#parts + 1] = tostring(entry)
+        elseif type(entry) == "table" then
+            parts[#parts + 1] = tostring(entry.specId or entry.spec or entry.icon or "?")
+        else
+            parts[#parts + 1] = "?"
+        end
+        if i >= 6 then break end
+    end
+    return string.format("%d[%s]", #list, table.concat(parts, ","))
+end
+
+--- Compact one-line state for the debug log.
+local function MatchProbe(tag, extra)
+    local pm = pendingMatch
+    local parts = { "[MATCH]", tostring(tag or "?") }
+    if not pm then
+        parts[#parts + 1] = "pending=nil"
+    else
+        local r = pm.currentRound
+        local rIdx = r and r.round or "-"
+        local nRounds = (pm.rounds and #pm.rounds) or 0
+        parts[#parts + 1] = string.format("rounds=%d", nRounds)
+        parts[#parts + 1] = string.format("cur=%s", tostring(rIdx))
+        if r then
+            parts[#parts + 1] = "team=" .. DescribeComp(r.team)
+            parts[#parts + 1] = "enemy=" .. DescribeComp(r.enemy)
+            if r.won ~= nil then
+                parts[#parts + 1] = "won=" .. tostring(r.won)
+            end
+            if r._finalized then
+                parts[#parts + 1] = "finalized"
+            end
+        end
+        parts[#parts + 1] = "snap=" .. tostring(CountKeys(pm.roundStartSnap))
+        if pm.bracket then
+            parts[#parts + 1] = "bracket=" .. tostring(pm.bracket)
+        end
+        if pm.map then
+            parts[#parts + 1] = "map=" .. tostring(pm.map)
+        end
+    end
+    if extra and extra ~= "" then
+        parts[#parts + 1] = tostring(extra)
+    end
+    local line = table.concat(parts, " ")
+    lastProbeSummary = line
+    if ns.DebugLog then
+        ns.DebugLog(line)
+    end
+    if ns.RefreshMatchDebugTab then
+        ns.RefreshMatchDebugTab()
+    end
+    return line
+end
+
+--- Full structured dump for Copy / inspection.
+function ns.GetMatchTrackerDump()
+    local lines = {}
+    local function add(fmt, ...)
+        lines[#lines + 1] = string.format(fmt, ...)
+    end
+
+    add("=== AlterArena MatchTracker dump %s ===", date("%Y-%m-%d %H:%M:%S"))
+    local pm = pendingMatch
+    if not pm then
+        add("pendingMatch: nil (not in a tracked match)")
+        add("lastProbe: %s", lastProbeSummary ~= "" and lastProbeSummary or "(none)")
+        return table.concat(lines, "\n")
+    end
+
+    add("map: %s", tostring(pm.map))
+    add("bracket: %s", tostring(pm.bracket))
+    add("isRated: %s", tostring(pm.isRated))
+    add("matchStart: %s", tostring(pm.matchStartTime or pm.startTime))
+    add("earlyTermination: %s", tostring(pm.earlyTermination))
+    add("roundStartSnap keys: %d", CountKeys(pm.roundStartSnap))
+
+    if pm.ratingBefore then
+        for bIdx, b in pairs(pm.ratingBefore) do
+            add("  ratingBefore[%s]: rating=%s rounds=%s/%s",
+                tostring(bIdx),
+                tostring(b.rating),
+                tostring(b.roundsWon),
+                tostring(b.roundsPlayed))
+        end
+    end
+
+    local rounds = pm.rounds or {}
+    add("finalized rounds: %d", #rounds)
+    for i, rd in ipairs(rounds) do
+        add("  round %d: team=%s enemy=%s won=%s duration=%s reason=%s",
+            rd.round or i,
+            DescribeComp(rd.team),
+            DescribeComp(rd.enemy),
+            tostring(rd.won),
+            tostring(rd.duration),
+            tostring(rd._finalizeReason or ""))
+    end
+
+    if pm.currentRound then
+        local r = pm.currentRound
+        add("currentRound: #%s team=%s enemy=%s won=%s finalized=%s chatWinner=%s",
+            tostring(r.round),
+            DescribeComp(r.team),
+            DescribeComp(r.enemy),
+            tostring(r.won),
+            tostring(r._finalized),
+            tostring(r._chatWinner))
+    else
+        add("currentRound: nil")
+    end
+
+    -- Live API peek (safe)
+    local nOpp = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
+    add("API GetNumArenaOpponents: %s", tostring(nOpp))
+    for i = 1, math.min(nOpp, 3) do
+        local specID = GetArenaOpponentSpec and GetArenaOpponentSpec(i)
+        add("  opponent[%d] specId=%s", i, tostring(specID))
+    end
+    local nScore = (GetNumBattlefieldScores and GetNumBattlefieldScores()) or 0
+    add("API GetNumBattlefieldScores: %s", tostring(nScore))
+    if C_PvP and C_PvP.GetActiveMatchState then
+        add("API GetActiveMatchState: %s", tostring(C_PvP.GetActiveMatchState()))
+    end
+
+    add("lastProbe: %s", lastProbeSummary ~= "" and lastProbeSummary or "(none)")
+    return table.concat(lines, "\n")
+end
+
+function ns.DumpMatchTrackerState()
+    local text = ns.GetMatchTrackerDump()
+    if ns.DebugLog then
+        ns.DebugLog("-- MatchTracker dump --")
+        for line in string.gmatch(text, "[^\n]+") do
+            ns.DebugLog(line)
+        end
+    end
+    return text
+end
+
+function ns.GetLastMatchProbe()
+    return lastProbeSummary
+end
+
 
 local function EnsurePVPInfo()
     if C_AddOns and C_AddOns.LoadAddOn then
@@ -520,6 +685,9 @@ local function TryResolveCurrentRound()
                   tostring(round.won), "draw:", tostring(round.draw),
                   "myDelta:", myDelta, "totalDelta:", totalDelta,
                   "winners:", table.concat(names, ", "))
+    MatchProbe("ResolveRound", string.format(
+        "won=%s draw=%s myDelta=%s totalDelta=%s",
+        tostring(round.won), tostring(round.draw), tostring(myDelta), tostring(totalDelta)))
 end
 
 -- Called right before a round is pushed to pendingMatch.rounds. If the
@@ -582,6 +750,7 @@ local function FinalizeRound(round, reason)
     end
 
     table.insert(pendingMatch.rounds, round)
+    MatchProbe("FinalizeRound", string.format("reason=%s total=%d", tostring(reason), #pendingMatch.rounds))
     return true
 end
 
@@ -667,13 +836,14 @@ local function OnMatchStart()
         ns.DebugPrint("Round", rIdx, "baseline ready:", c, "players (attempt", attempt .. ")")
     end
 
+    MatchProbe("MatchStart")
     C_Timer.After(1.0, function() CaptureBaseline(1) end)
     -- Capture enemy arena opponent specs after gate opens
     C_Timer.After(2, function()
         if pendingMatch and pendingMatch.currentRound and pendingMatch.currentRound.round == rIdx then
+            local numOpp = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
             if GetNumArenaOpponents then
-                local numOpp = GetNumArenaOpponents()
-                for i = 1, math.min(numOpp or 3, 3) do
+                for i = 1, math.min(numOpp, 3) do
                     local specID = GetArenaOpponentSpec and GetArenaOpponentSpec(i)
                     if specID and specID > 0 then
                         local _, _, _, specIcon = GetSpecializationInfoByID(specID)
@@ -683,6 +853,7 @@ local function OnMatchStart()
                     end
                 end
             end
+            MatchProbe("EnemySpecs", "nOpp=" .. tostring(numOpp))
         end
     end)
 
@@ -1010,6 +1181,7 @@ local function CheckRatingSnapshotDiff(matchEntry, pendingRatingBefore)
 end
 
 local function OnMatchComplete()
+    MatchProbe("MatchComplete")
     if not pendingMatch then
         return
     end
@@ -1271,8 +1443,11 @@ function ns.InitMatchTracker()
             end
 
         elseif event == "PVP_MATCH_ACTIVE" then
+            MatchProbe("EVT_ACTIVE")
             OnMatchStart()
         elseif event == "PVP_MATCH_STATE_CHANGED" then
+            local st = C_PvP and C_PvP.GetActiveMatchState and C_PvP.GetActiveMatchState()
+            MatchProbe("EVT_STATE", "state=" .. tostring(st))
             local state = C_PvP and C_PvP.GetActiveMatchState and C_PvP.GetActiveMatchState() or nil
             ns.DebugPrint("PVP_MATCH_STATE_CHANGED ->", state)
 
@@ -1296,6 +1471,7 @@ function ns.InitMatchTracker()
         elseif event == "PVP_MATCH_COMPLETE" then
             OnMatchComplete()
         elseif event == "ARENA_OPPONENT_UPDATE" then
+            MatchProbe("EVT_OPP_UPDATE")
             if GetNumArenaOpponents then
                 for i = 1, GetNumArenaOpponents() do
                     local specID = GetArenaOpponentSpec and GetArenaOpponentSpec(i)
@@ -1341,6 +1517,11 @@ function ns.InitMatchTracker()
             -- server pushes new scoreboard data — including the moment a
             -- round ends.
             if pendingMatch then
+                local now = GetTime and GetTime() or time()
+                if (now - lastScoreProbe) >= 1.5 then
+                    lastScoreProbe = now
+                    MatchProbe("EVT_SCORE", "n=" .. tostring(GetNumBattlefieldScores and GetNumBattlefieldScores() or 0))
+                end
                 TryResolveCurrentRound()
             end
 

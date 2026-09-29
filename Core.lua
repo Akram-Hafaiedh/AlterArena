@@ -651,6 +651,19 @@ SlashCmdList["ALTERARENA"] = function(msg)
                 print("|cff40c0ffAlterArena|r: Debug module not loaded.")
             end
             if ns.ToggleDebugWindow then ns.ToggleDebugWindow(true) end
+        elseif sub == "match" or sub == "matchdump" or sub == "dump" then
+            if ns.ToggleDebugWindow then ns.ToggleDebugWindow(true) end
+            local f = _G.AlterArenaDebugFrame
+            if f and f.ShowTab then f:ShowTab("match") end
+            if ns.DumpMatchTrackerState then
+                local text = ns.DumpMatchTrackerState()
+                if f and f.RefreshMatchTab then f:RefreshMatchTab() end
+                if text and ns.ShowDebugCopyPanel then
+                    ns.ShowDebugCopyPanel(text, f)
+                end
+            else
+                print("|cff40c0ffAlterArena|r: MatchTracker dump unavailable.")
+            end
         elseif sub == "toggle" then
             if AlterArenaDB and AlterArenaDB.settings then
                 AlterArenaDB.settings.debugMode = not AlterArenaDB.settings.debugMode

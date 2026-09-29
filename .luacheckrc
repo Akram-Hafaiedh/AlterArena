@@ -91,6 +91,7 @@ read_globals = {
 
     -- Arena / PvP
     "GetPersonalRatedInfo",
+    "RequestRatedInfo",
     "GetNumArenaOpponents",
     "GetArenaOpponentSpec",
     "GetNumBattlefieldScores",
@@ -159,6 +160,7 @@ ignore = {
     "213", -- unused loop variable
     "311", -- value assigned to variable is unused
     "512", -- loop can be executed at most once (rare false positive)
+    "611", -- line contains only whitespace
     "631", -- line too long (we set max_line_length but allow occasional overflow via 631 if needed)
 }
 
@@ -169,5 +171,4 @@ exclude_files = {
     ".git",
     ".github",
     "Libs",
-    ".vscode"
 }

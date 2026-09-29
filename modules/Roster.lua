@@ -682,12 +682,10 @@ function ns.RenderRosterView(frame)
 
         -- Best Tier column
         local bestRating = 0
-        local bestBracket = nil
         if rec.bracketRatings then
-            for bName, bData in pairs(rec.bracketRatings) do
+            for _, bData in pairs(rec.bracketRatings) do
                 if bData.current and bData.current > bestRating then
                     bestRating = bData.current
-                    bestBracket = bName
                 end
             end
         end

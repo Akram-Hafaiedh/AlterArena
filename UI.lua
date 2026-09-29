@@ -563,8 +563,8 @@ local function CreateMainFrame()
             local rec = AlterArenaDB.players[key]
             local name = (rec and rec.name) or key
             local count = (rec and rec.matches and #rec.matches) or 0
-            local c = ns.GetClassColor(rec and rec.class)
-            local label = string.format("|c%s%s|r |cff666677(%d)|r", c.colorStr or "ffffffff", name, count)
+            local classColor = ns.GetClassColor(rec and rec.class)
+            local label = string.format("|c%s%s|r |cff666677(%d)|r", classColor.colorStr or "ffffffff", name, count)
             
             table.insert(items, {
                 type  = "radio",
