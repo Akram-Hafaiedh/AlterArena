@@ -19,6 +19,11 @@ local DEFAULTS = {
 
 local lastKnownAmount = {}
 
+-- Legacy id → current ns.SOUNDS id (old CurrencyAlert used short names / file paths)
+local LEGACY_SOUND_IDS = {
+    alarm = "alarm3",
+}
+
 -- -------------------------------------------------------------------------
 -- Config helpers
 -- -------------------------------------------------------------------------
@@ -37,20 +42,22 @@ local function GetConfig()
             cfg.perCurrency[key] = { enabled = def.enabled, threshold = def.threshold }
         end
     end
-    return cfg
-end
-
-local function GetSoundFile(soundID)
-    for _, s in ipairs(ns.SOUNDS) do
-        if s.id == soundID then return s.file end
+    -- Migrate legacy sound ids once
+    if cfg.sound and LEGACY_SOUND_IDS[cfg.sound] then
+        cfg.sound = LEGACY_SOUND_IDS[cfg.sound]
     end
-    return nil
+    return cfg
 end
 
 local function PlayAlertSound()
     local cfg = GetConfig()
-    local file = GetSoundFile(cfg.sound)
-    if file then pcall(PlaySoundFile, file) end
+    local soundId = cfg.sound or "readycheck"
+    if ns.PlaySoundById then
+        ns.PlaySoundById(soundId)
+    else
+        -- Minimal fallback if Core hasn't loaded the sound system yet
+        pcall(PlaySound, 8960) -- READY_CHECK
+    end
 end
 
 -- -------------------------------------------------------------------------
@@ -59,7 +66,7 @@ end
 
 local function CreateAlertFrame()
     local f = CreateFrame("Frame", "AlterArenaCurrencyAlert", UIParent, "BackdropTemplate")
-    f:SetSize(340, 108)
+    f:SetSize(340, 78)
     f:SetFrameStrata("DIALOG")
     f:SetFrameLevel(100)
     f:SetMovable(true)
@@ -100,57 +107,11 @@ local function CreateAlertFrame()
 
     f.hint = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     f.hint:SetPoint("BOTTOMRIGHT", -10, 6)
-    
-    -- updated hint
-    f.ctaBtn = CreateFrame("Button", nil, f, "BackdropTemplate")
-    f.ctaBtn:SetSize(120, 20)
-    f.ctaBtn:SetPoint("BOTTOMLEFT", 12, 6)
-    f.ctaBtn:SetBackdrop({
-        bgFile = "Interface/Buttons/WHITE8X8",
-        edgeFile = "Interface/Buttons/WHITE8X8",
-        edgeSize = 1,
-    })
-    f.ctaBtn:SetBackdropColor(0.16, 0.14, 0.08, 0.95)
-    f.ctaBtn:SetBackdropBorderColor(0.80, 0.65, 0.20, 0.9)
-    f.ctaBtn.text = f.ctaBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    f.ctaBtn.text:SetPoint("CENTER")
-    f.ctaBtn.text:SetText("|cffffd100Open Currency Tab|r")
-    f.ctaBtn:SetScript("OnEnter", function(self)
-        self:SetBackdropColor(0.24, 0.20, 0.10, 1)
-    end)
-    f.ctaBtn:SetScript("OnLeave", function(self)
-        self:SetBackdropColor(0.16, 0.14, 0.08, 0.95)
-    end)
-    f.ctaBtn:SetScript("OnClick", function()
-        if ToggleCharacter then
-            ToggleCharacter("TokenFrame")
-        end
+    f.hint:SetText("|cff666677Click to dismiss|r")
+
+    f:SetScript("OnMouseDown", function()
         ns.HideCurrencyAlert()
     end)
-
-    -- Close button for the alert toast(X)
-    f.closeBtn = CreateFrame("Button", nil, f, "BackdropTemplate")
-    f.closeBtn:SetSize(18, 18)
-    f.closeBtn:SetPoint("TOPRIGHT", -6, -6)
-    f.closeBtn:SetBackdrop({
-        bgFile = "Interface/Buttons/WHITE8X8",
-        edgeFile = "Interface/Buttons/WHITE8X8",
-        edgeSize = 1,
-    })
-    f.closeBtn:SetBackdropColor(0.15, 0.15, 0.18, 0.8)
-    f.closeBtn:SetBackdropBorderColor(0.30, 0.30, 0.35, 0.8)
-    f.closeBtn.text = f.closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    f.closeBtn.text:SetPoint("CENTER", 0, 1)
-    f.closeBtn.text:SetText("|cffaaaaaa×|r")
-    f.closeBtn:SetScript("OnEnter", function(self)
-        self:SetBackdropColor(0.8, 0.2, 0.2, 0.9)
-        self.text:SetText("|cffffffff×|r")
-    end)
-    f.closeBtn:SetScript("OnLeave", function(self)
-        self:SetBackdropColor(0.15, 0.15, 0.18, 0.8)
-        self.text:SetText("|cffaaaaaa×|r")
-    end)
-    f.closeBtn:SetScript("OnClick", function() ns.HideCurrencyAlert() end)
 
     f:Hide()
     return f
@@ -256,6 +217,3 @@ function ns.CheckCurrencyAlerts()
         end
     end
 end
-
-
-ns.GetCurrencyAlertConfig = GetConfig

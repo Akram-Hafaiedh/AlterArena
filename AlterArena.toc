@@ -8,8 +8,11 @@
 ## X-Category: PvP
 
 Core.lua
-MatchTracker.lua
-QueueTimer.lua
 Dropdowns.lua
-CurrencyAlert.lua
 UI.lua
+modules\MatchTracker.lua
+modules\QueueTimer.lua
+modules\CurrencyAlert.lua
+modules\Settings.lua
+modules\Roster.lua
+modules\History.lua

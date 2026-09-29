@@ -55,74 +55,52 @@ ns.CURRENCY = {
 -- =========================================================================
 -- Sound library
 -- =========================================================================
--- Each entry: { id, label, category, soundKit, file }
---   soundKit : numeric SoundKit ID (preferred; Blizzard ships these stable)
---   file     : fallback .ogg path when soundKit is nil OR PlaySound fails
--- Resolution order: PlaySound(soundKit) → PlaySoundFile(file) → silent.
---
--- The `id` is stored in SavedVariables so entries can be reordered or
--- relabeled without breaking user preferences.
+-- Prefer numeric SoundKit IDs from FrameXML SOUNDKIT (stable across renames).
+-- Verified against BlizzardInterfaceResources SoundKit.lua / 12.x clients:
+--   PVP_THROUGH_QUEUE = 8459   (actual queue-ready horn)
+--   RAID_WARNING      = 8959
+--   READY_CHECK       = 8960
+--   ALARM_CLOCK_*     = 18871 / 12867 / 12889
+-- Resolution: PlaySound(soundKit) → PlaySoundFile(file) → silent.
+-- Stored by stable `id` so labels can change without breaking SavedVariables.
 ns.SOUNDS = {
-    -- ---------------------------------------------------------------------
-    -- PvP / Queue — matches Blizzard's own Sound Alerts picker
-    -- ---------------------------------------------------------------------
-    -- Only IDs verified live on 12.1.0 are listed here. Dead names have been
-    -- replaced with plain numeric soundKit IDs so PlaySound doesn't waste a
-    -- pcall on a nil enum lookup before falling through.
-    { id = "none",        category = "PvP", label = "None" },
-    { id = "pvpqueue",    category = "PvP", label = "PvP Queue Ready",  soundKit = 8959 },
-    { id = "raidwarning", category = "PvP", label = "Raid Warning",     soundKit = 8959 },
-    { id = "readycheck",  category = "PvP", label = "Ready Check",      soundKit = 8960 },
-    { id = "alarm1",      category = "PvP", label = "Alarm Clock 1",    soundKit = 18871 },
-    { id = "alarm2",      category = "PvP", label = "Alarm Clock 2",    soundKit = 12867 },
-    { id = "alarm3",      category = "PvP", label = "Alarm Clock 3",    soundKit = 12889 },
+    { id = "none",           category = "PvP", label = "None" },
+    -- Real queue-ready sound (was incorrectly mapped to RAID_WARNING 8959)
+    { id = "pvpqueue",       category = "PvP", label = "PvP Queue Ready",      soundKit = 8459 },  -- PVP_THROUGH_QUEUE
+    { id = "pvpenter",       category = "PvP", label = "PvP Enter Queue",      soundKit = 8458 },  -- PVP_ENTER_QUEUE
+    { id = "raidwarning",    category = "PvP", label = "Raid Warning",         soundKit = 8959 },  -- RAID_WARNING
+    { id = "readycheck",     category = "PvP", label = "Ready Check",          soundKit = 8960 },  -- READY_CHECK
+    { id = "lfgrolecheck",   category = "PvP", label = "LFG Role Check",       soundKit = 17317 }, -- LFG_ROLE_CHECK
+    { id = "bgcountdown",    category = "PvP", label = "BG Countdown Finish",  soundKit = 25478 }, -- UI_BATTLEGROUND_COUNTDOWN_FINISHED
+    { id = "alarm1",         category = "PvP", label = "Alarm Clock 1",        soundKit = 18871 }, -- ALARM_CLOCK_WARNING_1
+    { id = "alarm2",         category = "PvP", label = "Alarm Clock 2",        soundKit = 12867 }, -- ALARM_CLOCK_WARNING_2
+    { id = "alarm3",         category = "PvP", label = "Alarm Clock 3",        soundKit = 12889 }, -- ALARM_CLOCK_WARNING_3
+    { id = "bossemote",      category = "PvP", label = "Boss Emote Warning",   soundKit = 12197 }, -- RAID_BOSS_EMOTE_WARNING
+    { id = "raidwhisper",    category = "PvP", label = "Raid Whisper Warning", soundKit = 37666 }, -- UI_RAID_BOSS_WHISPER_WARNING
 
-    -- Verified numeric SoundKit IDs for 12.1.0. The old .ogg paths and
-    -- descriptive string names no longer resolve — Blizzard pruned the
-    -- SOUNDKIT table. Where a perfect match wasn't available, the closest
-    -- functional equivalent is used. Use /alterarena soundsearch <term>
-    -- to find better IDs and swap them in.
-    { id = "boat_horn",     category = "Devices", label = "Boat Horn",        soundKit = 261318 },  -- DwarfHorn
-    { id = "air_horn",      category = "Devices", label = "Air Horn",         soundKit = 7466054 },  -- GoblinHotrod_Horn
-    { id = "bike_horn",     category = "Devices", label = "Bike Horn",        soundKit = 7466947 },  -- GoblinHotrod_Horn
-    { id = "cash_register", category = "Devices", label = "Cash Register",    soundKit = 7466070 }, -- FX_Ship_Bell_Chime_01
-    { id = "jackpot_bell",  category = "Devices", label = "Jackpot Bell",     soundKit = 7466070 }, -- FX_Ship_Bell_Chime_01
-    { id = "jackpot_coins", category = "Devices", label = "Jackpot Coins",    soundKit = 7466063 }, -- FX_Ship_Bell_Chime_02
-    { id = "jackpot_fail",  category = "Devices", label = "Jackpot Fail",     soundKit = 7466071 }, -- FX_Ship_Bell_Chime_03
-    { id = "rotary_dial",   category = "Devices", label = "Rotary Phone Dial", soundKit = 18871 },  -- ALARM_CLOCK_WARNING_1 (placeholder)
-    { id = "rotary_ring",   category = "Devices", label = "Rotary Phone Ring", soundKit = 12867 },  -- ALARM_CLOCK_WARNING_2 (placeholder)
-    { id = "stove_pipe",    category = "Devices", label = "Stove Pipe",       soundKit = 97598 },  -- UI_73_ARTIFACT_OVERLOADED_ORB_IMPACT_LOW
-    { id = "trashcan_lid",  category = "Devices", label = "Trashcan Lid",     soundKit = 97597 },  -- UI_73_ARTIFACT_OVERLOADED_ORB_IMPACT_MEDIUM
-
-    { id = "cat",           category = "Animals", label = "Cat",              soundKit = 599705 }, -- Pet_FelineFamiliar_Clickable01
-    { id = "chicken",       category = "Animals", label = "Chicken",          soundKit = 8960 },   -- READY_CHECK (placeholder)
-    { id = "cow",           category = "Animals", label = "Cow",              soundKit = 1941215 },-- MON_PrairieDog_V2_Wound_01
-    { id = "dog",           category = "Animals", label = "Dog",              soundKit = 1941216 },-- MON_PrairieDog_V2_Wound_02
-
-    { id = "impacts_flesh", category = "Impacts", label = "Impact Flesh",     soundKit = 97598 },  -- UI_73_ARTIFACT_OVERLOADED_ORB_IMPACT_LOW
-    { id = "impacts_metal", category = "Impacts", label = "Impact Metal",     soundKit = 97597 },  -- UI_73_ARTIFACT_OVERLOADED_ORB_IMPACT_MEDIUM
-    { id = "impacts_stone", category = "Impacts", label = "Impact Stone",     soundKit = 97598 },
-    { id = "impacts_wood",  category = "Impacts", label = "Impact Wood",      soundKit = 97597 },
+    { id = "achievement",    category = "UI",  label = "Achievement",          soundKit = 13832 }, -- ACHIEVEMENT_MENU_OPEN
+    { id = "bnettoast",      category = "UI",  label = "Battle.net Toast",     soundKit = 18019 }, -- UI_BNET_TOAST
+    { id = "questcomplete",  category = "UI",  label = "Auto Quest Complete",  soundKit = 23404 }, -- UI_AUTO_QUEST_COMPLETE
+    { id = "ig_pvp_update",  category = "UI",  label = "PvP Update",           soundKit = 4574 },  -- IG_PVP_UPDATE
+    { id = "map_ping",       category = "UI",  label = "Map Ping",             soundKit = 3175 },  -- MAP_PING
+    { id = "tell_message",   category = "UI",  label = "Tell Message",         soundKit = 3081 },  -- TELL_MESSAGE
 }
 
--- Fast lookup by id.
 ns.SOUND_BY_ID = {}
 for _, s in ipairs(ns.SOUNDS) do
     ns.SOUND_BY_ID[s.id] = s
 end
 
 -- Plays a sound entry by id. Safe to call anywhere; silent on failure.
--- Resolution paths, tried in order:
---   1. Numeric soundKit           → PlaySound(n)
---   2. String soundKit via SOUNDKIT      → PlaySound(n)
---   3. String soundKit via Enum.SoundKitID → PlaySound(n)
---   4. Hardcoded fallbackNumeric  → PlaySound(n)
---   5. .ogg file path             → PlaySoundFile(path)
--- Enable /aa debug to see which path fired.
 function ns.PlaySoundById(id)
+    if not id or id == "none" then
+        return false
+    end
     local entry = ns.SOUND_BY_ID[id]
     if not entry then
-        print("|cff40c0ff[AA-SOUND]|r unknown id:", tostring(id))
+        if AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.debugMode then
+            print("|cff40c0ff[AA-SOUND]|r unknown id:", tostring(id))
+        end
         return false
     end
 
@@ -131,11 +109,12 @@ function ns.PlaySoundById(id)
 
     -- Path 1: numeric soundKit
     if type(entry.soundKit) == "number" and PlaySound then
-        played = pcall(PlaySound, entry.soundKit)
+        local ok = pcall(PlaySound, entry.soundKit)
+        played = ok and true or false
         table.insert(detail, "numeric=" .. tostring(played))
     end
 
-    -- Path 2/3: string soundKit
+    -- Path 2: string soundKit via SOUNDKIT / Enum.SoundKitID
     if not played and type(entry.soundKit) == "string" then
         local name = entry.soundKit
         local kitID
@@ -148,20 +127,23 @@ function ns.PlaySoundById(id)
             table.insert(detail, "Enum=" .. tostring(kitID))
         end
         if kitID and PlaySound then
-            played = pcall(PlaySound, kitID)
+            local ok = pcall(PlaySound, kitID)
+            played = ok and true or false
             table.insert(detail, "play=" .. tostring(played))
         end
     end
 
-    -- Path 4: explicit numeric fallback
+    -- Path 3: explicit numeric fallback
     if not played and entry.fallbackNumeric and PlaySound then
-        played = pcall(PlaySound, entry.fallbackNumeric)
+        local ok = pcall(PlaySound, entry.fallbackNumeric)
+        played = ok and true or false
         table.insert(detail, "fbNum=" .. tostring(played))
     end
 
-    -- Path 5: file
-    if not played and entry.file then
-        played = pcall(PlaySoundFile, entry.file)
+    -- Path 4: file path
+    if not played and entry.file and PlaySoundFile then
+        local ok = pcall(PlaySoundFile, entry.file)
+        played = ok and true or false
         table.insert(detail, "file=" .. tostring(played))
     end
 
@@ -883,14 +865,15 @@ SlashCmdList["ALTERARENA"] = function(msg)
     elseif msg == "soundlist" then
         print("|cff40c0ffAlterArena|r: Available sounds:")
         for _, s in ipairs(ns.SOUNDS) do
-            print("  ", s.category, "|", s.id, "|", s.label)
+            local kit = s.soundKit and tostring(s.soundKit) or "—"
+            print(string.format("  %-10s | %-16s | %-22s | kit=%s", s.category, s.id, s.label, kit))
         end
     elseif msg and msg:match("^soundsearch%s+(.+)$") then
         local needle = msg:match("^soundsearch%s+(.+)$"):upper()
         print("|cff40c0ffAlterArena|r: Searching SOUNDKIT for '" .. needle .. "'")
         local found = 0
         for name, id in pairs(SOUNDKIT or {}) do
-            if name:upper():find(needle, 1, true) then
+            if type(name) == "string" and name:upper():find(needle, 1, true) then
                 print(string.format("  %-45s = %d", name, id))
                 found = found + 1
                 if found >= 40 then
@@ -900,29 +883,24 @@ SlashCmdList["ALTERARENA"] = function(msg)
             end
         end
         if found == 0 then
-            print("  (nothing found — that name no longer exists)")
+            print("  (nothing found — that name may not exist on this client)")
         end
     elseif msg and msg:match("^sounddump") then
-        -- Print the SoundKit IDs that actually exist on THIS client.
-        -- Usage: /aa sounddump           -> all known patterns
-        --        /aa sounddump RAID       -> anything containing "RAID"
         local needle = msg:match("^sounddump%s+(.+)$")
         local pat = needle and needle:upper() or nil
         local names = {
-            "READY_CHECK", "RAID_WARNING", "RAID_BOSS_DEFEATED",
+            "READY_CHECK", "RAID_WARNING", "RAID_BOSS_EMOTE_WARNING",
             "ALARM_CLOCK_WARNING_1", "ALARM_CLOCK_WARNING_2", "ALARM_CLOCK_WARNING_3",
-            "QUEST_COMPLETE", "AUTO_QUEST_COMPLETE",
-            "BOSS_EMOTE_WARNING", "P_V_P_QUEUE_READY", "PVP_QUEUE_READY",
-            "B G_COUNTDOWN_START", "BG_COUNTDOWN_START",
-            "BG_COUNTDOWN_FINISHED", "ORDER_HALL_TALENT_COMPLETE",
-            "PVP_PRESTIGE_RANK_UP", "MAINMENU_OPTION_CHECKBOX_ON",
-            "IG_CHARACTER_INFO_OPEN", "IG_MAINMENU_OPEN",
+            "PVP_THROUGH_QUEUE", "PVP_ENTER_QUEUE", "LFG_ROLE_CHECK",
+            "UI_BATTLEGROUND_COUNTDOWN_FINISHED", "UI_BATTLEGROUND_COUNTDOWN_TIMER",
+            "UI_RAID_BOSS_WHISPER_WARNING", "UI_BNET_TOAST", "UI_AUTO_QUEST_COMPLETE",
+            "ACHIEVEMENT_MENU_OPEN", "IG_PVP_UPDATE", "MAP_PING", "TELL_MESSAGE",
         }
-        print("|cff40c0ffAlterArena|r: SOUNDKIT dump " .. (pat and ("matching '"..pat.."'") or "(all known names)"))
+        print("|cff40c0ffAlterArena|r: SOUNDKIT dump " .. (pat and ("matching '"..pat.."'") or "(known names)"))
         for _, n in ipairs(names) do
             if not pat or n:find(pat, 1, true) then
                 local v = SOUNDKIT and SOUNDKIT[n]
-                print(string.format("  %-30s = %s", n, tostring(v)))
+                print(string.format("  %-40s = %s", n, tostring(v)))
             end
         end
     else

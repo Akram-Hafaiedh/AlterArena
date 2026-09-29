@@ -32,6 +32,31 @@ local function IsIndexable(v)
     return true
 end
 
+-- WoW 12.x seals many scoreboard fields as "secret values". Reading them is
+-- fine, but using them as table keys, in arithmetic, or in comparisons will
+-- throw. These helpers return nil for anything we can't safely use.
+local function IsSecret(v)
+    return v ~= nil and issecretvalue and issecretvalue(v) or false
+end
+
+local function SafeValue(v)
+    if v == nil or IsSecret(v) then return nil end
+    return v
+end
+
+local function SafeNumber(v)
+    v = SafeValue(v)
+    if v == nil then return nil end
+    return tonumber(v)
+end
+
+local function SafeString(v)
+    v = SafeValue(v)
+    if v == nil then return nil end
+    if type(v) ~= "string" then return nil end
+    return v
+end
+
 -- Returns the current PvP season number, or nil if the API isn't available.
 -- Used to tag each match so we can filter by season later.
 local function GetCurrentSeasonId()
@@ -286,7 +311,9 @@ local function SanitizeMatches(record)
             m.map = "Arena"
         end
 
-        -- In Solo Shuffle, ensure team contains ONLY the player, and enemyTeam is clean & deduplicated (max 5)
+        -- Solo Shuffle: prefer a full 3-icon team from per-round data so the
+        -- history row can show [icon][icon][icon] vs [icon][icon][icon].
+        -- Only fall back to "player only" when no round composition exists.
         local isShuffle = (m.bracket == "Solo Shuffle" or m.bracket == "Shuffle")
         if isShuffle then
             local playerName = UnitName("player") or record.name or "Player"
@@ -295,9 +322,49 @@ local function SanitizeMatches(record)
             local _, playerClass = UnitClass("player")
             playerClass = playerClass or record.class or (m.team and m.team[1] and m.team[1].class)
 
-            m.team = { { name = playerName, spec = playerSpec, icon = playerIcon, class = playerClass } }
+            local bestTeam, bestEnemy = nil, nil
+            if m.rounds and #m.rounds > 0 then
+                for _, rd in ipairs(m.rounds) do
+                    if rd.team and #rd.team >= 2 and (not bestTeam or #rd.team > #bestTeam) then
+                        bestTeam = rd.team
+                    end
+                    if rd.enemy and #rd.enemy >= 1 and (not bestEnemy or #rd.enemy > #bestEnemy) then
+                        bestEnemy = rd.enemy
+                    end
+                end
+            end
 
-            if m.enemyTeam and #m.enemyTeam > 0 then
+            if bestTeam and #bestTeam >= 2 then
+                local teamMembers = {}
+                for _, ic in ipairs(bestTeam) do
+                    if type(ic) == "number" then
+                        table.insert(teamMembers, { icon = ic })
+                    elseif type(ic) == "table" then
+                        table.insert(teamMembers, ic)
+                    end
+                    if #teamMembers >= 3 then break end
+                end
+                if #teamMembers > 0 then
+                    m.team = teamMembers
+                end
+            elseif not m.team or #m.team == 0 then
+                m.team = { { name = playerName, spec = playerSpec, icon = playerIcon, class = playerClass } }
+            end
+
+            if bestEnemy and #bestEnemy >= 1 then
+                local enemyMembers = {}
+                for _, ic in ipairs(bestEnemy) do
+                    if type(ic) == "number" then
+                        table.insert(enemyMembers, { icon = ic })
+                    elseif type(ic) == "table" then
+                        table.insert(enemyMembers, ic)
+                    end
+                    if #enemyMembers >= 3 then break end
+                end
+                if #enemyMembers > 0 then
+                    m.enemyTeam = enemyMembers
+                end
+            elseif m.enemyTeam and #m.enemyTeam > 0 then
                 local cleanEnemy = {}
                 local seen = {}
                 for _, mem in ipairs(m.enemyTeam) do
@@ -333,12 +400,15 @@ local function SanitizeMatches(record)
         end
     end
 
-    -- Ensure won flag matches rounds or rating change
+    -- Ensure won flag matches rounds or rating change (scaled for early leaves)
     for _, m in ipairs(record.matches) do
         if m.roundsWon ~= nil then
-            if m.roundsWon >= 4 then
+            local played = m.roundsPlayed or 6
+            local winThreshold = math.floor(played / 2) + 1
+            local drawThreshold = played / 2
+            if m.roundsWon >= winThreshold then
                 m.won = true
-            elseif m.roundsWon == 3 then
+            elseif played % 2 == 0 and m.roundsWon == drawThreshold then
                 m.won = nil
             else
                 m.won = false
@@ -360,6 +430,270 @@ end
 
 local activePoller = nil
 
+-- Extracts the player's rounds won from the new 12.1 scoreboard format.
+-- The old info.roundStats.roundsWon is gone. Stats now live in info.stats,
+-- an array of { pvpStatID, pvpStatValue, name, ... }.
+local function ExtractRoundsWon(info)
+    if not info then return nil end
+
+    if info.stats then
+        -- 1. Try to resolve the victory stat ID safely.
+        local victoryID = nil
+        if C_PvP and C_PvP.GetCustomVictoryStatID then
+            local ok, id = pcall(C_PvP.GetCustomVictoryStatID)
+            if ok then victoryID = SafeNumber(id) end
+        end
+
+        -- 2. Match by victory stat ID (if we could resolve it)
+        if victoryID then
+            for _, stat in ipairs(info.stats) do
+                local statID = SafeNumber(stat and stat.pvpStatID)
+                if statID and statID == victoryID then
+                    local v = SafeNumber(stat.pvpStatValue)
+                    if v then return v end
+                end
+            end
+        end
+
+        -- 3. Match by stat name (Victory / Win / Round)
+        for _, stat in ipairs(info.stats) do
+            local sname = SafeString(stat and stat.name)
+            if sname and sname ~= "" then
+                local n = sname:lower()
+                if n:find("victory") or n:find("win") or n:find("round") then
+                    local v = SafeNumber(stat.pvpStatValue)
+                    if v then return v end
+                end
+            end
+        end
+
+        -- 4. Single-stat fallback for shuffle: only one stat per player.
+        --    If it exists and isn't secret, use it.
+        local firstStat = info.stats[1]
+        if firstStat then
+            local v = SafeNumber(firstStat.pvpStatValue)
+            if v then return v end
+        end
+    end
+
+    -- Legacy fallback for older clients.
+    if info.roundStats then
+        local v = SafeNumber(info.roundStats.roundsWon)
+        if v then return v end
+    end
+
+    return nil
+end
+
+
+-- Per-round scoreboard snapshot. Called at the START of each round.
+-- Captures each player's cumulative roundsWon so we can diff it when the
+-- round ends. Keys are GUIDs (or names as fallback).
+local function SnapshotScoreboard()
+    local snap = {}
+    if not C_PvP or not C_PvP.GetScoreInfo or not GetNumBattlefieldScores then
+        return snap
+    end
+    local n = GetNumBattlefieldScores() or 0
+    if n == 0 then return snap end
+
+    for i = 1, n do
+        local info = C_PvP.GetScoreInfo(i)
+        if info then
+            -- info.guid is a secret string in 12.x and CANNOT be used as a
+            -- table key. Names are plain strings and unique within a match,
+            -- so we key by name. Slot index is a fallback only.
+            local name = SafeString(info.name)
+            local key  = name or ("slot_" .. i)
+
+            local roundsWon = ExtractRoundsWon(info) or 0
+            snap[key] = {
+                name = name or key,
+                roundsWon = roundsWon,
+            }
+        end
+    end
+    return snap
+end
+
+-- True when a snapshot has no players in it (scoreboard hasn't been pushed yet)
+local function IsSnapEmpty(snap)
+    if not snap then return true end
+    return next(snap) == nil
+end
+
+-- Diff two scoreboard snapshots and record per-round winners into the round.
+-- Called at END of round (when the next PVP_MATCH_ACTIVE fires).
+local function ApplyRoundOutcome(round, beforeSnap, afterSnap)
+    if not round or not beforeSnap or not afterSnap then return end
+
+    -- Build a set of names whose roundsWon incremented since last snapshot.
+    local winners = {}
+    for key, after in pairs(afterSnap) do
+        local before = beforeSnap[key]
+        local beforeWon = before and before.roundsWon or 0
+        if after.roundsWon > beforeWon then
+            winners[after.name] = true
+        end
+    end
+
+    -- Was the local player among the winners?
+    local playerName = UnitName("player")
+    if playerName and winners[playerName] then
+        round.won = true
+    else
+        -- If at least 3 players' counts incremented and ours wasn't among
+        -- them, we know we lost. If fewer than 3 incremented, the snapshot
+        -- is likely incomplete — either the scoreboard hadn't refreshed, or
+        -- the round was abandoned mid-fight (someone left). In that case
+        -- mark the round as incomplete rather than recording a fabricated
+        -- loss.
+        local count = 0
+        for _ in pairs(winners) do count = count + 1 end
+        if count >= 3 then
+            round.won = false
+        else
+            round.incomplete = true
+        end
+    end
+
+    ns.DebugPrint("Round", round.round, "outcome resolved:",
+                  tostring(round.won), "winners:", (function()
+                      local t = {}
+                      for n in pairs(winners) do t[#t+1] = n end
+                      return table.concat(t, ", ")
+                  end)())
+end
+
+-- Re-entrant resolver. Safe to call any number of times per round.
+-- Uses both the scoreboard delta AND the match state to decide the outcome:
+--   - my delta > 0                                    -> win
+--   - state >= 4, total delta >= 3, my delta == 0     -> loss
+--   - state >= 4, total delta == 0                    -> draw
+-- Otherwise the round is still in progress and we wait.
+local function TryResolveCurrentRound()
+    if not pendingMatch or not pendingMatch.currentRound then return end
+    local round = pendingMatch.currentRound
+    if round.won ~= nil or round.draw or round.incomplete then return end
+
+    local base = pendingMatch.roundStartSnap
+    if IsSnapEmpty(base) then
+        -- No baseline yet. Patch 4 keeps retrying it.
+        return
+    end
+
+    if RequestBattlefieldScoreData then pcall(RequestBattlefieldScoreData) end
+    local after = SnapshotScoreboard()
+    if IsSnapEmpty(after) then
+        ns.DebugPrint("TryResolve: scoreboard empty, retry later")
+        return
+    end
+
+    local playerName = UnitName("player")
+    local myDelta, totalDelta, winners = 0, 0, {}
+
+    for key, a in pairs(after) do
+        local b = base[key]
+        local before = (b and b.roundsWon) or 0
+        local delta  = (a.roundsWon or 0) - before
+        if delta > 0 then
+            totalDelta = totalDelta + delta
+            winners[a.name] = delta
+            if playerName and a.name == playerName then
+                myDelta = delta
+            end
+        end
+    end
+
+    if totalDelta == 0 then
+        ns.DebugPrint("TryResolve: no delta yet")
+        return
+    end
+
+    local state = C_PvP and C_PvP.GetActiveMatchState and C_PvP.GetActiveMatchState() or 0
+
+    if myDelta and myDelta > 0 then
+        round.won = true
+    elseif state >= 4 and totalDelta >= 3 then
+        round.won = false
+    elseif state >= 4 and totalDelta == 0 then
+        round.draw = true
+    else
+        ns.DebugPrint("TryResolve: waiting for PostRound (state=", state, ")")
+        return
+    end
+
+    local names = {}
+    for n, d in pairs(winners) do table.insert(names, n .. "=" .. tostring(d)) end
+    ns.DebugPrint("Round", round.round, "resolved:",
+                  tostring(round.won), "draw:", tostring(round.draw),
+                  "myDelta:", myDelta, "totalDelta:", totalDelta,
+                  "winners:", table.concat(names, ", "))
+end
+
+-- Called right before a round is pushed to pendingMatch.rounds. If the
+-- scoreboard never resolved the round, fall back to the BG system chat
+-- message that Blizzard announces after each round.
+local function CommitChatFallback(round)
+    if not round or round.won ~= nil or round.draw or round.incomplete then return end
+
+    local w = round._chatWinner
+    if not w or w == "" then return end
+
+    local me = UnitName("player")
+    if me and w:find(me, 1, true) then
+        round.won = true
+    else
+        local faction = UnitFactionGroup("player")
+        local wl = w:lower()
+        if (faction == "Alliance" and wl:find("alliance", 1, true))
+        or (faction == "Horde"    and wl:find("horde", 1, true)) then
+            round.won = true
+        else
+            round.won = false
+        end
+    end
+
+    ns.DebugPrint("Round", round.round, "resolved by chat fallback:",
+                  tostring(round.won), "winner:", w)
+end
+
+-- Idempotent round finalization. Every rollover signal (state change,
+-- PVP_MATCH_ACTIVE, match end) calls this. The `_finalized` flag ensures a
+-- single round can only ever land in pendingMatch.rounds once, no matter
+-- how many signals fire — this is what fixes the "9 rounds in a 6-round
+-- match" bug.
+local function FinalizeRound(round, reason)
+    if not round or round._finalized then return false end
+    round._finalized = true
+
+    local now = time()
+
+    -- Per-round duration only. NOT C_PvP.GetPVPActiveMatchDuration() (that
+    -- returns the whole match, which is why every duplicate used to show
+    -- the same number).
+    round.duration = math.max(1, now - (round.startTime or now))
+
+    TryResolveCurrentRound()
+    CommitChatFallback(round)
+
+    -- Reject fully-empty phantom rounds produced by stray signals.
+    -- A real round has an outcome, a chat hint, or clearly played (>= 10s).
+    -- Exception: the very last round on match end always counts, even if
+    -- someone left inside the first 10 seconds.
+    local elapsed    = now - (round.startTime or now)
+    local hasOutcome = (round.won ~= nil) or round.draw or round.incomplete
+    local hasChat    = round._chatWinner ~= nil
+
+    if not (hasOutcome or hasChat or elapsed >= 10 or reason == "match_end") then
+        ns.DebugPrint("Discarding empty round", round.round, "elapsed:", elapsed)
+        return false
+    end
+
+    table.insert(pendingMatch.rounds, round)
+    return true
+end
+
 local function OnMatchStart()
     ns.DebugPrint("OnMatchStart, pendingMatch =", pendingMatch)
     EnsurePVPInfo()
@@ -370,12 +704,9 @@ local function OnMatchStart()
     -- Solo Shuffle round transition check:
     -- If already in a pending match in the same zone within the last 40 minutes, treat as next round
     if pendingMatch and pendingMatch.map == currentZone and (now - (pendingMatch.matchStartTime or pendingMatch.startTime or now)) < 2400 then
-        -- Finalize previous round
+        -- Finalize previous round (idempotent — see FinalizeRound)
         if pendingMatch.currentRound then
-            local rApi = C_PvP and C_PvP.GetPVPActiveMatchDuration and C_PvP.GetPVPActiveMatchDuration()
-            local rDur = (rApi and rApi > 0 and math.floor(rApi + 0.5)) or math.max(1, now - (pendingMatch.currentRound.startTime or now))
-            pendingMatch.currentRound.duration = rDur
-            table.insert(pendingMatch.rounds, pendingMatch.currentRound)
+            FinalizeRound(pendingMatch.currentRound, "next_round")
             pendingMatch.currentRound = nil
         end
     else
@@ -413,6 +744,39 @@ local function OnMatchStart()
         won = nil,
     }
 
+    -- Baseline snapshot. Scoreboard data isn't always pushed immediately,
+    -- so retry until non-empty. Do NOT clobber a non-empty baseline that
+    -- was rolled over from the previous round's PostRound snapshot.
+    if RequestBattlefieldScoreData then
+        pcall(RequestBattlefieldScoreData)
+    end
+
+    local function CaptureBaseline(attempt)
+        if not pendingMatch or pendingMatch.currentRound == nil then return end
+        if pendingMatch.currentRound.round ~= rIdx then return end
+        attempt = attempt or 1
+
+        if RequestBattlefieldScoreData then
+            pcall(RequestBattlefieldScoreData)
+        end
+
+        local snap = SnapshotScoreboard()
+
+        if IsSnapEmpty(snap) and attempt < 5 then
+            C_Timer.After(1.0, function() CaptureBaseline(attempt + 1) end)
+            return
+        end
+
+        if IsSnapEmpty(pendingMatch.roundStartSnap) then
+            pendingMatch.roundStartSnap = snap
+        end
+
+        local c = 0
+        for _ in pairs(pendingMatch.roundStartSnap) do c = c + 1 end
+        ns.DebugPrint("Round", rIdx, "baseline ready:", c, "players (attempt", attempt .. ")")
+    end
+
+    C_Timer.After(1.0, function() CaptureBaseline(1) end)
     -- Capture enemy arena opponent specs after gate opens
     C_Timer.After(2, function()
         if pendingMatch and pendingMatch.currentRound and pendingMatch.currentRound.round == rIdx then
@@ -431,63 +795,133 @@ local function OnMatchStart()
         end
     end)
 
-    -- Capture teammate specs a bit later than the enemy capture, so the
-    -- inspect cache has time to populate. Only runs in Solo Shuffle —
-    -- in 2v2/3v3 the team is set once at match start and doesn't rotate.
-    C_Timer.After(3.5, function()
+    -- Capture teammate specs. In Solo Shuffle party1/party2 are your
+    -- teammates for the current round. GetInspectSpecialization often
+    -- returns 0 until NotifyInspect has completed, so we request inspect
+    -- and retry a couple of times.
+    local function CaptureTeammates(attempt)
         if not pendingMatch or not pendingMatch.currentRound then return end
         if pendingMatch.currentRound.round ~= rIdx then return end
-        if pendingMatch.currentRound.teamCaptured then return end
-        pendingMatch.currentRound.teamCaptured = true
-
         local round = pendingMatch.currentRound
+        attempt = attempt or 1
 
-        -- Helpers: is a unit the player, or one of the enemies this round?
-        local function IsSelf(u)
-            return UnitIsUnit(u, "player")
-        end
-        local function IsEnemy(u)
-            local n = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
-            for j = 1, n do
-                if UnitIsUnit(u, "arena" .. j) then return true end
+        -- Own spec ID: GetSpecializationInfo's FIRST return is the specID.
+        local mySpecID = nil
+        if GetSpecialization and GetSpecializationInfo then
+            local sIdx = GetSpecialization()
+            if sIdx then
+                local id = GetSpecializationInfo(sIdx)
+                if id and id > 0 then mySpecID = id end
             end
-            return false
+        end
+        if not mySpecID and GetInspectSpecialization then
+            local ok, id = pcall(GetInspectSpecialization, "player")
+            if ok and id and id > 0 then mySpecID = id end
         end
 
-        -- Scan every possible group-unit token. Solo Shuffle puts you in a
-        -- raid of 6, but party tokens can appear on some builds, so we
-        -- check both. UnitIsUnit is the only identity check that works
-        -- with Midnight's secret unit values.
-        local function ScanTeam(prefix, maxIndex)
-            for i = 1, maxIndex do
-                local unit = prefix .. i
-                if UnitExists(unit) then
-                    if not IsSelf(unit) and not IsEnemy(unit) then
-                        local icon = nil
-                        if GetInspectSpecialization and GetSpecializationInfoByID then
-                            local ok, specID = pcall(GetInspectSpecialization, unit)
-                            if ok and specID and specID > 0 then
-                                local _, _, _, sIcon = GetSpecializationInfoByID(specID)
-                                icon = sIcon
-                            end
+        -- Path A (preferred): party1 / party2 are teammates in arena.
+        for i = 1, 2 do
+            local unit = "party" .. i
+            if UnitExists(unit) then
+                if NotifyInspect and CanInspect and CanInspect(unit) then
+                    pcall(NotifyInspect, unit)
+                end
+                local specID = nil
+                if GetInspectSpecialization then
+                    local ok, id = pcall(GetInspectSpecialization, unit)
+                    if ok and id and id > 0 then specID = id end
+                end
+                if specID and specID > 0 then
+                    local _, _, _, sIcon = GetSpecializationInfoByID(specID)
+                    if sIcon then
+                        local already = false
+                        for _, existing in ipairs(round.team) do
+                            if existing == sIcon then already = true; break end
                         end
-                        if icon then
-                            table.insert(round.team, icon)
+                        if not already and #round.team < 3 then
+                            table.insert(round.team, sIcon)
                         end
                     end
                 end
             end
         end
 
-        local numGroup = (GetNumGroupMembers and GetNumGroupMembers()) or 0
-        if IsInRaid and IsInRaid() then
-            ScanTeam("raid", numGroup)
-        else
-            -- Party path (rare in shuffle, but here for safety)
-            ScanTeam("party", math.max(1, numGroup - 1))
+        -- Path B (fallback): raid-unit arithmetic when party units failed.
+        if #round.team < 3 then
+            local enemySpecCounts = {}
+            local numEnemies = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
+            for i = 1, math.min(numEnemies, 3) do
+                local specID = GetArenaOpponentSpec and GetArenaOpponentSpec(i)
+                if specID and specID > 0 then
+                    enemySpecCounts[specID] = (enemySpecCounts[specID] or 0) + 1
+                end
+            end
+
+            local allRaidSpecs = {}
+            local numGroup = (GetNumGroupMembers and GetNumGroupMembers()) or 0
+            local prefix = (IsInRaid and IsInRaid()) and "raid" or "party"
+            for i = 1, numGroup do
+                local unit = prefix .. i
+                if UnitExists(unit) then
+                    if NotifyInspect and CanInspect and CanInspect(unit) then
+                        pcall(NotifyInspect, unit)
+                    end
+                    if GetInspectSpecialization then
+                        local ok, specID = pcall(GetInspectSpecialization, unit)
+                        if ok and specID and specID > 0 then
+                            table.insert(allRaidSpecs, specID)
+                        end
+                    end
+                end
+            end
+
+            for specID, count in pairs(enemySpecCounts) do
+                for _ = 1, count do
+                    for k, v in ipairs(allRaidSpecs) do
+                        if v == specID then
+                            table.remove(allRaidSpecs, k)
+                            break
+                        end
+                    end
+                end
+            end
+            if mySpecID then
+                for k, v in ipairs(allRaidSpecs) do
+                    if v == mySpecID then
+                        table.remove(allRaidSpecs, k)
+                        break
+                    end
+                end
+            end
+            for _, specID in ipairs(allRaidSpecs) do
+                if #round.team >= 3 then break end
+                local _, _, _, sIcon = GetSpecializationInfoByID(specID)
+                if sIcon then
+                    local already = false
+                    for _, existing in ipairs(round.team) do
+                        if existing == sIcon then already = true; break end
+                    end
+                    if not already then
+                        table.insert(round.team, sIcon)
+                    end
+                end
+            end
         end
-    end)
+
+        ns.DebugPrint("Round", rIdx, "team captured (attempt", attempt .. "):",
+                      #round.team, "icon(s) — expected 3")
+
+        -- Retry while we still have fewer than 3 icons (inspect lag).
+        if #round.team < 3 and attempt < 3 then
+            C_Timer.After(2.0, function() CaptureTeammates(attempt + 1) end)
+        else
+            round.teamCaptured = true
+        end
+    end
+
+    C_Timer.After(2.5, function() CaptureTeammates(1) end)
 end
+
 
 local function UpdateFromScoreboard(matchEntry, record)
     if not C_PvP or not C_PvP.GetScoreInfo or not GetNumBattlefieldScores then return false end
@@ -516,66 +950,87 @@ local function UpdateFromScoreboard(matchEntry, record)
     for i = 1, numScores do
         local info = C_PvP.GetScoreInfo(i)
         if info then
-            local cleanInfoName = info.name and AmbiguateName(info.name)
-            local isPlayer = (info.guid and playerGUID and info.guid == playerGUID)
-                          or (info.name and (info.name == playerName or info.name == playerFullName or cleanInfoName == playerName))
+            -- Name is safe to read and compare. GUID is a secret string in
+            -- 12.x, so we cannot compare it directly. We identify the local
+            -- player by name only.
+            local infoName = SafeString(info.name)
+            local cleanInfoName = infoName and AmbiguateName(infoName) or nil
+            local isPlayer = (infoName and (infoName == playerName
+                                            or infoName == playerFullName
+                                            or cleanInfoName == playerName)) or false
+
+            local infoTeam = SafeNumber(info.team) or SafeNumber(info.faction)
 
             if isPlayer then
                 foundPlayer = true
-                playerTeam = info.team or info.faction
+                playerTeam = infoTeam
 
-                if info.ratingChange and info.ratingChange ~= 0 then
-                    matchEntry.ratingChange = info.ratingChange
+                local rChange = SafeNumber(info.ratingChange)
+                if rChange and rChange ~= 0 then
+                    matchEntry.ratingChange = rChange
                     if matchEntry.ratingBefore then
-                        matchEntry.ratingAfter = matchEntry.ratingBefore + info.ratingChange
+                        matchEntry.ratingAfter = matchEntry.ratingBefore + rChange
                     end
                 end
 
-                if info.prematchMMR and info.prematchMMR > 0 then
-                    matchEntry.mmrBefore = info.prematchMMR
-                    matchEntry.mmrAfter = info.postmatchMMR or (info.prematchMMR + (info.mmrChange or 0))
-                    matchEntry.mmrChange = info.mmrChange or (matchEntry.mmrAfter - matchEntry.mmrBefore)
+                local preMMR  = SafeNumber(info.prematchMMR)
+                local postMMR = SafeNumber(info.postmatchMMR)
+                local mmrChg  = SafeNumber(info.mmrChange)
+                if preMMR and preMMR > 0 then
+                    matchEntry.mmrBefore = preMMR
+                    matchEntry.mmrAfter  = postMMR or (preMMR + (mmrChg or 0))
+                    matchEntry.mmrChange = mmrChg or (matchEntry.mmrAfter - matchEntry.mmrBefore)
 
                     if record and record.bracketRatings and record.bracketRatings["Shuffle"] then
                         record.bracketRatings["Shuffle"].mmr = matchEntry.mmrAfter
                     end
                 end
 
-                local pWins = info.roundStats and (info.roundStats.roundsWon or info.roundStats.wins)
+                local pWins = ExtractRoundsWon(info)
                 if pWins then
                     matchEntry.roundsWon = pWins
-                    matchEntry.roundsPlayed = (info.roundStats.roundsPlayed or 6)
+                    -- Don't hardcode 6: an early-termination match can have
+                    -- fewer completed rounds. Prefer the value we actually
+                    -- recorded; fall back to 6 only if we somehow have none.
+                    local recordedRounds = (pendingMatch and #(pendingMatch.rounds or {})) or 0
+                    if recordedRounds > 0 then
+                        matchEntry.roundsPlayed = recordedRounds
+                    elseif matchEntry.roundsPlayed == nil then
+                        matchEntry.roundsPlayed = 6
+                    end
                 end
             end
 
-            -- Track most wins and most deaths
-            local wins = info.roundStats and (info.roundStats.roundsWon or info.roundStats.wins) or 0
+            -- Track most wins and most deaths. Both ExtractRoundsWon and
+            -- info.deaths may return nil if the underlying values are secret.
+            local wins = ExtractRoundsWon(info) or 0
             if wins > mostWinsCount then
                 mostWinsCount = wins
-                mostWinsName = cleanInfoName or info.name or "Player"
-                if info.classToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[info.classToken] then
-                    mostWinsColor = RAID_CLASS_COLORS[info.classToken].colorStr or "ffffffff"
+                mostWinsName = cleanInfoName or infoName or "Player"
+                local cToken = SafeString(info.classToken)
+                if cToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[cToken] then
+                    mostWinsColor = RAID_CLASS_COLORS[cToken].colorStr or "ffffffff"
                 end
             end
 
-            local deaths = info.deaths or 0
+            local deaths = SafeNumber(info.deaths) or 0
             if deaths > mostDeathsCount then
                 mostDeathsCount = deaths
-                mostDeathsName = cleanInfoName or info.name or "Player"
-                if info.classToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[info.classToken] then
-                    mostDeathsColor = RAID_CLASS_COLORS[info.classToken].colorStr or "ffffffff"
+                mostDeathsName = cleanInfoName or infoName or "Player"
+                local cToken = SafeString(info.classToken)
+                if cToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[cToken] then
+                    mostDeathsColor = RAID_CLASS_COLORS[cToken].colorStr or "ffffffff"
                 end
             end
 
-            local cToken = (info.classToken or ""):upper()
-            local sName = info.talentSpec or info.specName
-            local sIcon = (sName and ns.GetSpecIcon and ns.GetSpecIcon(sName, cToken))
+            local cToken = (SafeString(info.classToken) or ""):upper()
+            local sName  = SafeString(info.talentSpec) or SafeString(info.specName)
+            local sIcon  = (sName and ns.GetSpecIcon and ns.GetSpecIcon(sName, cToken))
 
             if not sIcon or not sName then
                 local d = nil
-                if IsIndexable(info.guid) then d = detectedPlayerSpecs[info.guid] end
-                if not d and IsIndexable(info.name) then d = detectedPlayerSpecs[info.name] end
-                if not d and IsIndexable(cleanInfoName) then d = detectedPlayerSpecs[cleanInfoName] end
+                if infoName then d = detectedPlayerSpecs[infoName] end
+                if not d and cleanInfoName then d = detectedPlayerSpecs[cleanInfoName] end
                 if d then
                     sName = sName or d.spec
                     sIcon = sIcon or d.icon
@@ -584,9 +1039,9 @@ local function UpdateFromScoreboard(matchEntry, record)
             end
 
             local member = {
-                name = cleanInfoName or info.name,
-                spec = sName,
-                icon = sIcon,
+                name  = cleanInfoName or infoName,
+                spec  = sName,
+                icon  = sIcon,
                 class = cToken,
             }
 
@@ -600,12 +1055,12 @@ local function UpdateFromScoreboard(matchEntry, record)
                     enemySeen[eKey] = true
                     table.insert(enemyList, member)
                 end
-                local m = info.postmatchMMR or info.prematchMMR
+                local m = SafeNumber(info.postmatchMMR) or SafeNumber(info.prematchMMR)
                 if m and m > 0 then
                     enemyTotal = enemyTotal + m
                     enemyCount = enemyCount + 1
                 end
-            elseif info.team and playerTeam and info.team == playerTeam then
+            elseif infoTeam and playerTeam and infoTeam == playerTeam then
                 table.insert(teamList, member)
             else
                 local eKey = (member.name and member.name:lower()) or (tostring(sName) .. "_" .. tostring(cToken))
@@ -613,7 +1068,7 @@ local function UpdateFromScoreboard(matchEntry, record)
                     enemySeen[eKey] = true
                     table.insert(enemyList, member)
                 end
-                local m = info.postmatchMMR or info.prematchMMR
+                local m = SafeNumber(info.postmatchMMR) or SafeNumber(info.prematchMMR)
                 if m and m > 0 then
                     enemyTotal = enemyTotal + m
                     enemyCount = enemyCount + 1
@@ -670,18 +1125,18 @@ local function OnMatchComplete()
 
     ns.DebugPrint("OnMatchComplete fired, rounds recorded =", #pendingMatch.rounds)
 
+    -- Final resolve attempt for the last round. Fires before we tear
+    -- pendingMatch down.
+    TryResolveCurrentRound()
+
     local record = ns.EnsurePlayerRecord()
     local now = time()
 
     -- Finalize last active round
     if pendingMatch.currentRound then
-        local rApi = C_PvP and C_PvP.GetPVPActiveMatchDuration and C_PvP.GetPVPActiveMatchDuration()
-        local rDur = (rApi and rApi > 0 and math.floor(rApi + 0.5)) or math.max(1, now - (pendingMatch.currentRound.startTime or now))
-        pendingMatch.currentRound.duration = rDur
-        table.insert(pendingMatch.rounds, pendingMatch.currentRound)
+        FinalizeRound(pendingMatch.currentRound, "match_end")
         pendingMatch.currentRound = nil
     end
-
     local specName = nil
     local specIcon = nil
     if GetSpecialization and GetSpecializationInfo then
@@ -767,6 +1222,7 @@ local function OnMatchComplete()
         roundsPlayed = roundsPlayedDelta,
         rounds = pendingMatch.rounds,
         seasonId = GetCurrentSeasonId(),
+        earlyTermination = pendingMatch.earlyTermination or false,
     }
 
     -- Request server scoreboard data
@@ -775,11 +1231,26 @@ local function OnMatchComplete()
     end
     UpdateFromScoreboard(matchEntry, record)
 
-    -- Determine outcome
+    -- Determine outcome. Thresholds scale with the actual number of rounds
+    -- played so early-termination matches (someone left) resolve correctly.
+    --
+    -- Full 6-round match:   4+ = Win, 3 = Draw, 0-2 = Loss
+    -- 5-round partial:      3+ = Win, 2.5 = n/a, 0-2 = Loss
+    -- 4-round partial:      3+ = Win, 2   = Draw, 0-1 = Loss
+    -- 3-round partial:      2+ = Win, 1.5 = n/a, 0-1 = Loss
+    -- 2-round partial:      2  = Win, 1   = Draw, 0   = Loss
+    -- 1-round partial:      1  = Win, n/a = n/a, 0   = Loss
+    --
+    -- In practice Blizzard counts any partial ≥1 round as valid; the
+    -- thresholds below mirror what the client shows on the scoreboard.
     if matchEntry.roundsWon ~= nil then
-        if matchEntry.roundsWon >= 4 then
+        local played = matchEntry.roundsPlayed or 6
+        local winThreshold = math.floor(played / 2) + 1  -- 4 for 6, 3 for 4, 2 for 3, 1 for 1
+        local drawThreshold = played / 2
+
+        if matchEntry.roundsWon >= winThreshold then
             matchEntry.won = true
-        elseif matchEntry.roundsWon == 3 then
+        elseif played % 2 == 0 and matchEntry.roundsWon == drawThreshold then
             matchEntry.won = nil
         else
             matchEntry.won = false
@@ -787,7 +1258,7 @@ local function OnMatchComplete()
     elseif matchEntry.ratingChange and matchEntry.ratingChange ~= 0 then
         matchEntry.won = (matchEntry.ratingChange > 0)
     else
-        matchEntry.won = true
+        matchEntry.won = nil
     end
 
     table.insert(record.matches, matchEntry)
@@ -804,10 +1275,14 @@ local function OnMatchComplete()
 
         ns.DebugPrint("UpdateFromScoreboard done, roundsWon =", matchEntry.roundsWon, "ratingChange =", matchEntry.ratingChange)
         
+        -- Same scaled thresholds as OnMatchComplete (handles early leaves)
         if matchEntry.roundsWon ~= nil then
-            if matchEntry.roundsWon >= 4 then
+            local played = matchEntry.roundsPlayed or 6
+            local winThreshold = math.floor(played / 2) + 1
+            local drawThreshold = played / 2
+            if matchEntry.roundsWon >= winThreshold then
                 matchEntry.won = true
-            elseif matchEntry.roundsWon == 3 then
+            elseif played % 2 == 0 and matchEntry.roundsWon == drawThreshold then
                 matchEntry.won = nil
             else
                 matchEntry.won = false
@@ -824,7 +1299,7 @@ local function OnMatchComplete()
             ns.RefreshUI()
         end
 
-        if (not snapUpdated or not scoreUpdated) and pollCount < 4 then
+        if (not snapUpdated or not scoreUpdated or matchEntry.roundsWon == nil) and pollCount < 8 then
             C_Timer.After(1.5, PollRating)
         end
     end
@@ -856,14 +1331,77 @@ function ns.InitMatchTracker()
     end
     frame:RegisterEvent("PVP_MATCH_ACTIVE")
     frame:RegisterEvent("PVP_MATCH_COMPLETE")
+    frame:RegisterEvent("PVP_MATCH_STATE_CHANGED")
     frame:RegisterEvent("UPDATE_BATTLEFIELD_SCORE")
     frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 
     frame:RegisterEvent("ARENA_OPPONENT_UPDATE")
 
+    -- Per-round win/loss detection for Solo Shuffle. Blizzard announces
+    -- "Round N won by <name>" on the BG system channel at the end of each
+    -- round. All three faction variants are hooked in case the message
+    -- routes through a different one on non-standard clients.
+    frame:RegisterEvent("CHAT_MSG_BG_SYSTEM_NEUTRAL")
+    frame:RegisterEvent("CHAT_MSG_BG_SYSTEM_ALLIANCE")
+    frame:RegisterEvent("CHAT_MSG_BG_SYSTEM_HORDE")
+
     frame:SetScript("OnEvent", function(self, event, ...)
-        if event == "PVP_MATCH_ACTIVE" then
+        if event == "CHAT_MSG_BG_SYSTEM_NEUTRAL"
+           or event == "CHAT_MSG_BG_SYSTEM_ALLIANCE"
+           or event == "CHAT_MSG_BG_SYSTEM_HORDE" then
+            local msg = ...
+            -- Format: "Round 1 won by Mogambala" / "Round 1 won by the Horde"
+            -- We only care about strings containing "won by" while a match is
+            -- in progress.
+                        -- Detect early termination.
+            if pendingMatch and msg
+               and (msg:find("has left", 1, true)
+                    or msg:find("has fled", 1, true)
+                    or msg:find("abandoned", 1, true)) then
+                pendingMatch.earlyTermination = true
+                ns.DebugPrint("Early termination detected:", msg)
+            end
+
+            if pendingMatch and msg and msg:find("won by", 1, true) then
+                local roundNum = tonumber(msg:match("Round%s+(%d+)"))
+                local winner   = msg:match("won by%s+(.+)$")
+
+                if pendingMatch.currentRound and winner and winner ~= "" then
+                    -- Store the chat hint ONLY. The scoreboard resolver
+                    -- runs first and is authoritative. CommitChatFallback
+                    -- uses this only if the scoreboard never resolved.
+                    pendingMatch.currentRound._chatWinner = winner
+                    if roundNum then
+                        pendingMatch.currentRound.round = roundNum
+                    end
+                    ns.DebugPrint("Round", pendingMatch.currentRound.round,
+                                  "chat winner stashed:", winner)
+                end
+            end
+
+        elseif event == "PVP_MATCH_ACTIVE" then
             OnMatchStart()
+        elseif event == "PVP_MATCH_STATE_CHANGED" then
+            local state = C_PvP and C_PvP.GetActiveMatchState and C_PvP.GetActiveMatchState() or nil
+            ns.DebugPrint("PVP_MATCH_STATE_CHANGED ->", state)
+
+            if pendingMatch and state then
+                local lastState = pendingMatch.matchState or 0
+
+                -- Engaged (3) -> PostRound (4) / Complete (5): round is over.
+                if state >= 4 and lastState < 4 and pendingMatch.currentRound then
+                    FinalizeRound(pendingMatch.currentRound, "post_round")
+
+                    -- Carry the live scoreboard forward as the baseline for
+                    -- the next round. This is what makes rounds 2+ reliable.
+                    pendingMatch.roundStartSnap = SnapshotScoreboard()
+                    pendingMatch.currentRound = nil
+
+                    ns.DebugPrint("Round rolled over at PostRound. Total rounds:", #pendingMatch.rounds)
+                end
+
+                pendingMatch.matchState = state
+            end
         elseif event == "PVP_MATCH_COMPLETE" then
             OnMatchComplete()
         elseif event == "ARENA_OPPONENT_UPDATE" then
@@ -908,6 +1446,13 @@ function ns.InitMatchTracker()
                 end
             end
         elseif event == "UPDATE_BATTLEFIELD_SCORE" then
+            -- The primary per-round resolver trigger. Fires whenever the
+            -- server pushes new scoreboard data — including the moment a
+            -- round ends.
+            if pendingMatch then
+                TryResolveCurrentRound()
+            end
+
             local pKey = ns.GetPlayerKey and ns.GetPlayerKey()
             local rec = pKey and AlterArenaDB and AlterArenaDB.players and AlterArenaDB.players[pKey]
             if rec and rec.matches and #rec.matches > 0 then
@@ -928,24 +1473,3 @@ function ns.InitMatchTracker()
     end)
 end
 
-
--- TEMP: Track arena unit deaths per round
-local f = CreateFrame("Frame")
-f:RegisterEvent("UNIT_HEALTH")
-f:SetScript("OnEvent", function(self, event, unit)
-    -- Filter to only relevant units
-    if not unit or not unit:match("^arena%d") and not unit:match("^raid%d") and not unit:match("^party%d") and unit ~= "player" then
-        return
-    end
-
-    local name = UnitName(unit) or "?"
-    local hp   = UnitHealth(unit) or 0
-    local maxHp= UnitHealthMax(unit) or 1
-    local dead = UnitIsDeadOrGhost(unit)
-    
-    -- Print all events for units that are at 0 HP or dead
-    if hp == 0 or dead then
-        print(string.format("|cffff8800[AA-DEATH]|r %s %s hp=%d/%d dead=%s",
-            event, unit, hp, maxHp, tostring(dead)))
-    end
-end)

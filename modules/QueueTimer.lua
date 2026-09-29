@@ -357,7 +357,8 @@ local function PlayPopAlert()
     if ns.PlaySoundById then
         ns.PlaySoundById(soundID)
     else
-        pcall(PlaySound, 8959)
+        -- Fallback: real PvP queue-ready kit (PVP_THROUGH_QUEUE), not RAID_WARNING
+        pcall(PlaySound, 8459)
     end
 
     print("|cff40c0ffAlterArena|r: Queue popped — accept it!")
