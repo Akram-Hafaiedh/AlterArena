@@ -1,0 +1,40 @@
+{
+    "Lua.runtime.version": "Lua 5.1",
+    "Lua.workspace.checkThirdParty": false,
+    "Lua.diagnostics.globals": [
+        "AlterArenaDB",
+        "SlashCmdList",
+        "CreateFrame",
+        "UIParent",
+        "C_Timer",
+        "C_PvP",
+        "C_CurrencyInfo",
+        "C_Seasons",
+        "C_AddOns",
+        "GameTooltip",
+        "Minimap",
+        "UnitName",
+        "UnitClass",
+        "GetRealmName",
+        "GetSpecialization",
+        "GetSpecializationInfo",
+        "GetSpecializationInfoByID",
+        "GetPersonalRatedInfo",
+        "PlaySound",
+        "PlaySoundFile",
+        "SOUNDKIT",
+        "Enum",
+        "wipe",
+        "hooksecurefunc",
+        "Ambiguate",
+        "issecretvalue",
+        "canaccessvalue"
+    ],
+    "Lua.diagnostics.disable": [
+        "undefined-field",
+        "duplicate-set-field"
+    ],
+    "files.associations": {
+        ".luacheckrc": "lua"
+    }
+}
