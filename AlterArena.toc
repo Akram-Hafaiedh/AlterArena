@@ -16,6 +16,7 @@ Data\Specs.lua
 
 # Core
 Utils\UITheme.lua
+Utils\Safe.lua
 Core\Database.lua
 Core.lua
 Dropdowns.lua
@@ -24,6 +25,7 @@ UI.lua
 # Modules
 modules\Debug.lua
 modules\Minimap.lua
+modules\MatchOutcome.lua
 modules\MatchTracker.lua
 modules\QueueTimer.lua
 modules\CurrencyAlert.lua

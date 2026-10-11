@@ -360,10 +360,12 @@ local function UpdateSettingsButtonState(frame)
         frame.settingsBtn:SetBackdropColor(0.20, 0.24, 0.32, 1)
         frame.settingsBtn:SetBackdropBorderColor(0.8, 0.65, 0.2, 1)
         if frame.settingsBtn.icon then frame.settingsBtn.icon:SetVertexColor(1, 0.82, 0) end
+        if frame.settingsBtn.label then frame.settingsBtn.label:SetText("|cffffd100Settings|r") end
     else
         frame.settingsBtn:SetBackdropColor(0.15, 0.15, 0.18, 0.8)
         frame.settingsBtn:SetBackdropBorderColor(0.25, 0.25, 0.30, 0.8)
-        if frame.settingsBtn.icon then frame.settingsBtn.icon:SetVertexColor(0.75, 0.75, 0.8) end
+        if frame.settingsBtn.icon then frame.settingsBtn.icon:SetVertexColor(0.85, 0.85, 0.9) end
+        if frame.settingsBtn.label then frame.settingsBtn.label:SetText("|cffccccddSettings|r") end
     end
 end
 
@@ -464,9 +466,9 @@ local function CreateMainFrame()
         frame:Hide()
     end)
 
-    -- Cogwheel Settings Button (Top-Right near Close Button)
+    -- Settings button (labeled — was a vague gear-only control)
     local settingsBtn = CreateFrame("Button", nil, titleBar, "BackdropTemplate")
-    settingsBtn:SetSize(22, 22)
+    settingsBtn:SetSize(78, 22)
     settingsBtn:SetPoint("RIGHT", closeBtn, "LEFT", -6, 0)
     settingsBtn:SetBackdrop({
         bgFile = "Interface/Buttons/WHITE8X8",
@@ -477,20 +479,24 @@ local function CreateMainFrame()
     settingsBtn:SetBackdropBorderColor(0.25, 0.25, 0.30, 0.8)
 
     settingsBtn.icon = settingsBtn:CreateTexture(nil, "ARTWORK")
-    settingsBtn.icon:SetSize(14, 14)
-    settingsBtn.icon:SetPoint("CENTER", 0, 0)
+    settingsBtn.icon:SetSize(13, 13)
+    settingsBtn.icon:SetPoint("LEFT", 6, 0)
     settingsBtn.icon:SetTexture("Interface\\WorldMap\\Gear_64")
-    settingsBtn.icon:SetTexCoord(0, 1, 0, 1)
-    settingsBtn.icon:SetVertexColor(0.75, 0.75, 0.8)
+    settingsBtn.icon:SetVertexColor(0.85, 0.85, 0.9)
+
+    settingsBtn.label = settingsBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    settingsBtn.label:SetPoint("LEFT", settingsBtn.icon, "RIGHT", 4, 0)
+    settingsBtn.label:SetText("|cffccccddSettings|r")
 
     settingsBtn:SetScript("OnEnter", function(self)
         self:SetBackdropColor(0.20, 0.22, 0.28, 1)
         self:SetBackdropBorderColor(0.8, 0.65, 0.2, 1)
         self.icon:SetVertexColor(1, 0.82, 0)
+        if self.label then self.label:SetText("|cffffd100Settings|r") end
         if GameTooltip then
             GameTooltip:SetOwner(self, "ANCHOR_TOPRIGHT")
-            GameTooltip:AddLine("AlterArena Settings", 1, 0.82, 0)
-            GameTooltip:AddLine("Configure floating HUD, debug mode, and database.", 0.8, 0.8, 0.8, true)
+            GameTooltip:AddLine("Settings", 1, 0.82, 0)
+            GameTooltip:AddLine("Queue HUD, alerts, appearance, and database.", 0.8, 0.8, 0.8, true)
             GameTooltip:Show()
         end
     end)
@@ -500,10 +506,12 @@ local function CreateMainFrame()
             self:SetBackdropColor(0.20, 0.24, 0.32, 1)
             self:SetBackdropBorderColor(0.8, 0.65, 0.2, 1)
             self.icon:SetVertexColor(1, 0.82, 0)
+            if self.label then self.label:SetText("|cffffd100Settings|r") end
         else
             self:SetBackdropColor(0.15, 0.15, 0.18, 0.8)
             self:SetBackdropBorderColor(0.25, 0.25, 0.30, 0.8)
-            self.icon:SetVertexColor(0.75, 0.75, 0.8)
+            self.icon:SetVertexColor(0.85, 0.85, 0.9)
+            if self.label then self.label:SetText("|cffccccddSettings|r") end
         end
         if GameTooltip then GameTooltip:Hide() end
     end)
@@ -513,6 +521,48 @@ local function CreateMainFrame()
         end
     end)
     frame.settingsBtn = settingsBtn
+
+    -- Debug button (next to Settings)
+    local debugBtn = CreateFrame("Button", nil, titleBar, "BackdropTemplate")
+    debugBtn:SetSize(58, 22)
+    debugBtn:SetPoint("RIGHT", settingsBtn, "LEFT", -6, 0)
+    debugBtn:SetBackdrop({
+        bgFile = "Interface/Buttons/WHITE8X8",
+        edgeFile = "Interface/Buttons/WHITE8X8",
+        edgeSize = 1,
+    })
+    debugBtn:SetBackdropColor(0.15, 0.15, 0.18, 0.8)
+    debugBtn:SetBackdropBorderColor(0.25, 0.25, 0.30, 0.8)
+
+    debugBtn.label = debugBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    debugBtn.label:SetPoint("CENTER", 0, 0)
+    debugBtn.label:SetText("|cffccccddDebug|r")
+
+    debugBtn:SetScript("OnEnter", function(self)
+        self:SetBackdropColor(0.18, 0.22, 0.30, 1)
+        self:SetBackdropBorderColor(0.35, 0.65, 0.95, 1)
+        if self.label then self.label:SetText("|cff7ec8ffDebug|r") end
+        if GameTooltip then
+            GameTooltip:SetOwner(self, "ANCHOR_TOPRIGHT")
+            GameTooltip:AddLine("Debug Window", 0.5, 0.8, 1)
+            GameTooltip:AddLine("Match probes, scoreboard dump, and live tracker state.", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end
+    end)
+    debugBtn:SetScript("OnLeave", function(self)
+        self:SetBackdropColor(0.15, 0.15, 0.18, 0.8)
+        self:SetBackdropBorderColor(0.25, 0.25, 0.30, 0.8)
+        if self.label then self.label:SetText("|cffccccddDebug|r") end
+        if GameTooltip then GameTooltip:Hide() end
+    end)
+    debugBtn:SetScript("OnClick", function()
+        if ns.ToggleDebugWindow then
+            ns.ToggleDebugWindow()
+        else
+            print("|cff40c0ffAlterArena|r: Debug module not loaded.")
+        end
+    end)
+    frame.debugBtn = debugBtn
 
     -- Navigation Bar with Tabs
     local navBar = CreateFrame("Frame", nil, frame)

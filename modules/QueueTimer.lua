@@ -18,13 +18,11 @@ local QUEUE_TYPE_LABELS = {
 }
 
 local function EnsurePVPInfo()
-    if C_AddOns and C_AddOns.LoadAddOn then
-        pcall(C_AddOns.LoadAddOn, "Blizzard_PVPUI")
-    elseif LoadAddOn then
-        pcall(LoadAddOn, "Blizzard_PVPUI")
-    end
+    -- Same rule as Core: never force-load Blizzard_PVPUI early.
     if RequestRatedInfo then
         pcall(RequestRatedInfo)
+    elseif C_PvP and C_PvP.RequestRatedInfo then
+        pcall(C_PvP.RequestRatedInfo)
     end
 end
 

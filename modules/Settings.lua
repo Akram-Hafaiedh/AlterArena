@@ -6,8 +6,8 @@ local ADDON_NAME, ns = ...
 
 local settingsFrame = nil
 
-local SETTINGS_W = 460
-local CARD_GAP = 10
+local SETTINGS_W = 500
+local CARD_GAP = 12
 
 local function CreateStyledButton(parent, text, width, height)
     local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
@@ -136,7 +136,7 @@ end
 
 local function CreateSettingsFrame()
     local f = CreateFrame("Frame", "AlterArenaSettingsFrame", UIParent, "BackdropTemplate")
-    f:SetSize(SETTINGS_W, 560)
+    f:SetSize(SETTINGS_W, 580)
     f:SetFrameStrata("DIALOG")
     f:SetFrameLevel(120)
     f:SetMovable(true)
@@ -232,29 +232,31 @@ local function CreateSettingsFrame()
     local y = 0
 
     -- ── 1. Queue Timer ──────────────────────────────────────────────────
-    local qCard = MakeSettingsCard(content, "Queue Timer HUD", 168)
+    local qCard = MakeSettingsCard(content, "Queue Timer HUD", 178)
     qCard:SetWidth(cardW)
     qCard:SetPoint("TOPLEFT", 0, y)
-    y = y - 168 - CARD_GAP
+    y = y - 178 - CARD_GAP
 
-    local qCb = MakeCheckRow(qCard, "Show floating HUD while queued", -40, function(on)
+    local qCb = MakeCheckRow(qCard, "Show floating HUD while queued", -38, function(on)
         if ns.SetQueueTimerEnabled then ns.SetQueueTimerEnabled(on) end
         f.UpdateStatus()
     end)
     f.timerCheckbox = qCb
 
     local qDesc = qCard:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    qDesc:SetPoint("TOPLEFT", 44, -66)
+    qDesc:SetPoint("TOPLEFT", 44, -62)
     qDesc:SetWidth(cardW - 58)
     qDesc:SetJustifyH("LEFT")
+    qDesc:SetWordWrap(true)
     qDesc:SetText("|cff888899Wait time, estimated duration, and recent rating while in queue.|r")
 
     local qStatus = qCard:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    qStatus:SetPoint("TOPLEFT", 44, -86)
+    qStatus:SetPoint("TOPLEFT", 44, -82)
     f.qStatus = qStatus
 
-    local qtSoundBtn = CreateStyledButton(qCard, "Sound: —", 200, 24)
-    qtSoundBtn:SetPoint("TOPLEFT", 14, -112)
+    -- Row 1: sound + play
+    local qtSoundBtn = CreateStyledButton(qCard, "Sound: —", 220, 24)
+    qtSoundBtn:SetPoint("TOPLEFT", 14, -110)
     f.qtSoundBtn = qtSoundBtn
     qtSoundBtn:SetScript("OnClick", function(self)
         local items = BuildSoundDropdownItems(
@@ -271,37 +273,39 @@ local function CreateSettingsFrame()
         ns.OpenDropdown(self, items)
     end)
 
-    local qtPlay = CreateStyledButton(qCard, "Play", 50, 24)
-    qtPlay:SetPoint("LEFT", qtSoundBtn, "RIGHT", 6, 0)
+    local qtPlay = CreateStyledButton(qCard, "Play", 56, 24)
+    qtPlay:SetPoint("LEFT", qtSoundBtn, "RIGHT", 8, 0)
     qtPlay:SetScript("OnClick", function()
         local id = AlterArenaDB and AlterArenaDB.settings and AlterArenaDB.settings.queueTimerSound or "pvpqueue"
         if ns.PlaySoundById then ns.PlaySoundById(id) end
     end)
 
-    local testBtn = CreateStyledButton(qCard, "Test HUD", 90, 24)
-    testBtn:SetPoint("LEFT", qtPlay, "RIGHT", 6, 0)
+    -- Row 2: test + reset (no horizontal overflow)
+    local testBtn = CreateStyledButton(qCard, "Test HUD", 100, 24)
+    testBtn:SetPoint("TOPLEFT", 14, -142)
     f.testBtn = testBtn
     testBtn:SetScript("OnClick", function()
         if ns.ToggleTestQueueTimer then ns.ToggleTestQueueTimer() end
         f.UpdateStatus()
     end)
 
-    local resetPosBtn = CreateStyledButton(qCard, "Reset Pos", 90, 24)
-    resetPosBtn:SetPoint("LEFT", testBtn, "RIGHT", 6, 0)
+    local resetPosBtn = CreateStyledButton(qCard, "Reset Position", 120, 24)
+    resetPosBtn:SetPoint("LEFT", testBtn, "RIGHT", 8, 0)
     resetPosBtn:SetScript("OnClick", function()
         if ns.ResetQueueTimerPosition then ns.ResetQueueTimerPosition() end
     end)
 
     -- ── 2. Currency Cap Alerts ──────────────────────────────────────────
-    local aCard = MakeSettingsCard(content, "Currency Cap Alerts", 210)
+    local aCard = MakeSettingsCard(content, "Currency Cap Alerts", 228)
     aCard:SetWidth(cardW)
     aCard:SetPoint("TOPLEFT", 0, y)
-    y = y - 210 - CARD_GAP
+    y = y - 228 - CARD_GAP
 
     local aDesc = aCard:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     aDesc:SetPoint("TOPLEFT", 14, -34)
     aDesc:SetWidth(cardW - 28)
     aDesc:SetJustifyH("LEFT")
+    aDesc:SetWordWrap(true)
     aDesc:SetText("|cff888899Toast when Honor or Bloody Tokens cross their warning threshold.|r")
 
     local currencyMeta = {
@@ -309,11 +313,11 @@ local function CreateSettingsFrame()
         { key = "tokens",   label = "Bloody Tokens" },
         { key = "conquest", label = "Conquest" },
     }
-    local cy = -58
+    local cy = -56
     f.currencyToggles = {}
     for _, meta in ipairs(currencyMeta) do
         local row = CreateFrame("Button", nil, aCard, "BackdropTemplate")
-        row:SetSize(cardW - 28, 22)
+        row:SetSize(cardW - 28, 24)
         row:SetPoint("TOPLEFT", 14, cy)
         row:SetBackdrop({
             bgFile = "Interface/Buttons/WHITE8X8",
@@ -326,11 +330,11 @@ local function CreateSettingsFrame()
         local chk = row:CreateTexture(nil, "OVERLAY")
         chk:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
         chk:SetSize(18, 18)
-        chk:SetPoint("LEFT", 4, 0)
+        chk:SetPoint("LEFT", 6, 0)
         row.chk = chk
 
         local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        lbl:SetPoint("LEFT", 28, 0)
+        lbl:SetPoint("LEFT", 30, 0)
         lbl:SetText(meta.label)
 
         local val = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -346,11 +350,12 @@ local function CreateSettingsFrame()
             f.UpdateStatus()
         end)
         f.currencyToggles[key] = row
-        cy = cy - 26
+        cy = cy - 28
     end
 
-    local aSoundBtn = CreateStyledButton(aCard, "Sound: —", 200, 24)
-    aSoundBtn:SetPoint("TOPLEFT", 14, cy - 6)
+    -- Row 1: sound + play
+    local aSoundBtn = CreateStyledButton(aCard, "Sound: —", 220, 24)
+    aSoundBtn:SetPoint("TOPLEFT", 14, cy - 8)
     f.alertSoundBtn = aSoundBtn
     aSoundBtn:SetScript("OnClick", function(self)
         local items = BuildSoundDropdownItems(
@@ -367,21 +372,22 @@ local function CreateSettingsFrame()
         ns.OpenDropdown(self, items)
     end)
 
-    local aPlay = CreateStyledButton(aCard, "Play", 50, 24)
-    aPlay:SetPoint("LEFT", aSoundBtn, "RIGHT", 6, 0)
+    local aPlay = CreateStyledButton(aCard, "Play", 56, 24)
+    aPlay:SetPoint("LEFT", aSoundBtn, "RIGHT", 8, 0)
     aPlay:SetScript("OnClick", function()
         local cfg = ns.GetCurrencyAlertConfig and ns.GetCurrencyAlertConfig()
         if ns.PlaySoundById then ns.PlaySoundById((cfg and cfg.sound) or "readycheck") end
     end)
 
-    local aTest = CreateStyledButton(aCard, "Test Alert", 90, 24)
-    aTest:SetPoint("LEFT", aPlay, "RIGHT", 6, 0)
+    -- Row 2: test + reset
+    local aTest = CreateStyledButton(aCard, "Test Alert", 100, 24)
+    aTest:SetPoint("TOPLEFT", 14, cy - 40)
     aTest:SetScript("OnClick", function()
         if ns.TestCurrencyAlert then ns.TestCurrencyAlert() end
     end)
 
-    local aReset = CreateStyledButton(aCard, "Reset Pos", 90, 24)
-    aReset:SetPoint("LEFT", aTest, "RIGHT", 6, 0)
+    local aReset = CreateStyledButton(aCard, "Reset Position", 120, 24)
+    aReset:SetPoint("LEFT", aTest, "RIGHT", 8, 0)
     aReset:SetScript("OnClick", function()
         if ns.ResetCurrencyAlertPosition then ns.ResetCurrencyAlertPosition() end
     end)

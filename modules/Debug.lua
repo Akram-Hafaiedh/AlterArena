@@ -94,6 +94,115 @@ function ns.GetDebugLogText()
     return table.concat(lines, "\n")
 end
 
+----------------------------------------------------------------------
+-- Persistent match-dump archive (SavedVariables — survives /reload)
+-- AlterArenaDB.debugArchive: last N dumps per rated queue.
+----------------------------------------------------------------------
+local ARCHIVE_MAX_TOTAL = 250
+local ARCHIVE_MAX_PER_BRACKET = 50
+
+local function EnsureDebugArchive()
+    if not AlterArenaDB then return nil end
+    AlterArenaDB.debugArchive = AlterArenaDB.debugArchive or {}
+    return AlterArenaDB.debugArchive
+end
+
+--- Save a full text dump tagged by bracket for later review.
+function ns.SaveMatchDebugDump(text, meta)
+    if not text or text == "" then return nil end
+    local arch = EnsureDebugArchive()
+    if not arch then return nil end
+    meta = meta or {}
+    local bracket = meta.bracket or "Unknown"
+    local entry = {
+        id = (arch._nextId or 1),
+        time = time(),
+        date = date("%Y-%m-%d %H:%M:%S"),
+        bracket = bracket,
+        map = meta.map,
+        reason = meta.reason,
+        won = meta.won,
+        rounds = meta.rounds,
+        text = text,
+    }
+    arch._nextId = entry.id + 1
+    arch.entries = arch.entries or {}
+    table.insert(arch.entries, entry)
+
+    local function countBracket(b)
+        local n = 0
+        for _, e in ipairs(arch.entries) do
+            if e.bracket == b then n = n + 1 end
+        end
+        return n
+    end
+    while countBracket(bracket) > ARCHIVE_MAX_PER_BRACKET do
+        for i, e in ipairs(arch.entries) do
+            if e.bracket == bracket then
+                table.remove(arch.entries, i)
+                break
+            end
+        end
+    end
+    while #arch.entries > ARCHIVE_MAX_TOTAL do
+        table.remove(arch.entries, 1)
+    end
+    ns.DebugLog(string.format("[MATCH] DumpArchived id=%d bracket=%s total=%d",
+        entry.id, tostring(bracket), #arch.entries), { silent = true })
+    return entry.id
+end
+
+function ns.ListMatchDebugDumps(filterBracket)
+    local arch = EnsureDebugArchive()
+    if not arch or not arch.entries then return {} end
+    local out = {}
+    for i = #arch.entries, 1, -1 do
+        local e = arch.entries[i]
+        if not filterBracket or e.bracket == filterBracket then
+            out[#out + 1] = {
+                id = e.id,
+                date = e.date,
+                time = e.time,
+                bracket = e.bracket,
+                map = e.map,
+                reason = e.reason,
+                won = e.won,
+                rounds = e.rounds,
+            }
+        end
+    end
+    return out
+end
+
+function ns.GetMatchDebugDumpById(id)
+    local arch = EnsureDebugArchive()
+    if not arch or not arch.entries then return nil end
+    for _, e in ipairs(arch.entries) do
+        if e.id == id then return e.text, e end
+    end
+    return nil
+end
+
+function ns.ClearMatchDebugArchive(filterBracket)
+    local arch = EnsureDebugArchive()
+    if not arch or not arch.entries then return 0 end
+    if not filterBracket then
+        local n = #arch.entries
+        wipe(arch.entries)
+        return n
+    end
+    local kept, removed = {}, 0
+    for _, e in ipairs(arch.entries) do
+        if e.bracket == filterBracket then
+            removed = removed + 1
+        else
+            kept[#kept + 1] = e
+        end
+    end
+    arch.entries = kept
+    return removed
+end
+
 --- ArtisansCodex-style copy panel: selectable EditBox so Ctrl+C works
 --- (system clipboard is restricted / in-game only on many clients).
 function ns.ShowDebugCopyPanel(text, parent)
@@ -634,6 +743,7 @@ local function EnsureDebugFrame()
         if f.btnDumpMatch then f.btnDumpMatch:SetShown(not isGeneral) end
         if f.btnRefreshMatch then f.btnRefreshMatch:SetShown(not isGeneral) end
         if f.btnCopyMatch then f.btnCopyMatch:SetShown(not isGeneral) end
+        if f.btnArchiveMatch then f.btnArchiveMatch:SetShown(not isGeneral) end
         if isGeneral then
             self:RefreshChecklist()
             self:RefreshLog()
@@ -800,6 +910,123 @@ local function EnsureDebugFrame()
         end
     end)
     f.btnCopyMatch = copyMatchBtn
+
+    -- Archived dumps (persisted per queue) — pick one and copy without replaying.
+    local archiveBtn = MakeBtn("Archive", 80)
+    archiveBtn:SetPoint("LEFT", copyMatchBtn, "RIGHT", 8, 0)
+    archiveBtn:Hide()
+    archiveBtn:SetScript("OnClick", function()
+        if not ns.ListMatchDebugDumps then
+            print("|cff40c0ff[AlterArena]|r No dump archive API.")
+            return
+        end
+        local list = ns.ListMatchDebugDumps()
+        if #list == 0 then
+            print("|cff40c0ff[AlterArena]|r Archive empty — finish a rated match with the addon loaded.")
+            return
+        end
+
+        if ns._archivePicker then
+            ns._archivePicker:Hide()
+            ns._archivePicker:SetParent(nil)
+            ns._archivePicker = nil
+        end
+
+        local picker = CreateFrame("Frame", "AlterArenaDumpArchivePicker", f, "BackdropTemplate")
+        picker:SetSize(420, 360)
+        picker:SetPoint("CENTER", UIParent, "CENTER")
+        picker:SetFrameStrata("FULLSCREEN_DIALOG")
+        picker:SetBackdrop({
+            bgFile = "Interface/Buttons/WHITE8X8",
+            edgeFile = "Interface/Buttons/WHITE8X8",
+            edgeSize = 1,
+            insets = { left = 1, right = 1, top = 1, bottom = 1 },
+        })
+        picker:SetBackdropColor(0.06, 0.07, 0.10, 0.98)
+        picker:SetBackdropBorderColor(0.25, 0.75, 1.0, 0.7)
+        picker:EnableMouse(true)
+        picker:SetMovable(true)
+        picker:RegisterForDrag("LeftButton")
+        picker:SetScript("OnDragStart", picker.StartMoving)
+        picker:SetScript("OnDragStop", picker.StopMovingOrSizing)
+
+        local title = picker:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        title:SetPoint("TOPLEFT", 12, -10)
+        title:SetText("|cff40c0ffSaved dumps|r  (by queue)")
+
+        local closeX = CreateFrame("Button", nil, picker, "UIPanelCloseButton")
+        closeX:SetPoint("TOPRIGHT", 2, 2)
+        closeX:SetScript("OnClick", function()
+            picker:Hide()
+            if ns._archivePicker == picker then ns._archivePicker = nil end
+        end)
+
+        local scroll = CreateFrame("ScrollFrame", nil, picker, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 10, -32)
+        scroll:SetPoint("BOTTOMRIGHT", -30, 44)
+        local child = CreateFrame("Frame", nil, scroll)
+        child:SetSize(370, 10)
+        scroll:SetScrollChild(child)
+
+        local filters = { "All", "Solo Shuffle", "3v3", "2v2", "Blitz", "10v10", "Arena", "Unknown" }
+        local y = 0
+        local function rebuild(filter)
+            for _, r in ipairs(child.rows or {}) do r:Hide() end
+            child.rows = {}
+            y = 0
+            local rows = ns.ListMatchDebugDumps(filter == "All" and nil or filter)
+            for _, e in ipairs(rows) do
+                local btn = CreateFrame("Button", nil, child, "BackdropTemplate")
+                btn:SetSize(360, 28)
+                btn:SetPoint("TOPLEFT", 0, -y)
+                btn:SetBackdrop({
+                    bgFile = "Interface/Buttons/WHITE8X8",
+                    edgeFile = "Interface/Buttons/WHITE8X8",
+                    edgeSize = 1,
+                })
+                btn:SetBackdropColor(0.12, 0.14, 0.18, 0.9)
+                btn:SetBackdropBorderColor(0.2, 0.25, 0.3, 0.6)
+                local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                fs:SetPoint("LEFT", 6, 0)
+                fs:SetJustifyH("LEFT")
+                fs:SetText(string.format(
+                    "#%d  |cff88ccff%s|r  %s  %s  r=%s  %s",
+                    e.id or 0,
+                    tostring(e.bracket or "?"),
+                    tostring(e.map or "?"),
+                    e.date or "",
+                    tostring(e.rounds or "-"),
+                    e.won == true and "|cff40ff40W|r" or (e.won == false and "|cffff4040L|r" or "—")
+                ))
+                btn:SetScript("OnClick", function()
+                    local text = ns.GetMatchDebugDumpById and ns.GetMatchDebugDumpById(e.id)
+                    if text and ns.ShowDebugCopyPanel then
+                        ns.ShowDebugCopyPanel(
+                            "=== AlterArena archived dump #" .. tostring(e.id) .. " ===\n" .. text,
+                            f
+                        )
+                    end
+                end)
+                child.rows[#child.rows + 1] = btn
+                y = y + 30
+            end
+            child:SetHeight(math.max(y, 40))
+        end
+
+        local fx = 10
+        for _, name in ipairs(filters) do
+            local fb = CreateFrame("Button", nil, picker, "UIPanelButtonTemplate")
+            fb:SetSize(52, 20)
+            fb:SetPoint("BOTTOMLEFT", fx, 12)
+            fb:SetText(name == "Solo Shuffle" and "Shuffle" or name)
+            fb:SetScript("OnClick", function() rebuild(name) end)
+            fx = fx + 54
+        end
+        rebuild("All")
+        ns._archivePicker = picker
+        picker:Show()
+    end)
+    f.btnArchiveMatch = archiveBtn
 
     local clearBtn = MakeBtn("Clear Log", 90)
     clearBtn:SetPoint("LEFT", testBtn, "RIGHT", 8, 0)

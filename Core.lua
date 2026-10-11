@@ -131,11 +131,9 @@ function ns.DebugPrint(...)
 end
 
 function ns.RequestPVPStats()
-    if C_AddOns and C_AddOns.LoadAddOn then
-        pcall(C_AddOns.LoadAddOn, "Blizzard_PVPUI")
-    elseif LoadAddOn then
-        pcall(LoadAddOn, "Blizzard_PVPUI")
-    end
+    -- Do not force-load Blizzard_PVPUI on login / PEW.
+    -- Loading it too early leaves Rated / Premade / Training tabs disabled
+    -- until a /reload. Only request rated info if the API is already present.
     if RequestRatedInfo then
         pcall(RequestRatedInfo)
     elseif C_PvP and C_PvP.RequestRatedInfo then
