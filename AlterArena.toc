@@ -26,6 +26,7 @@ UI.lua
 modules\Debug.lua
 modules\Minimap.lua
 modules\MatchOutcome.lua
+modules\MatchRounds.lua
 modules\MatchTracker.lua
 modules\QueueTimer.lua
 modules\CurrencyAlert.lua

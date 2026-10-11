@@ -500,6 +500,81 @@ local activePoller = nil
 -- Extracts the player's rounds won from the new 12.1 scoreboard format.
 -- The old info.roundStats.roundsWon is gone. Stats now live in info.stats,
 -- an array of { pvpStatID, pvpStatValue, name, ... }.
+
+-- Fill currentRound.enemy from arena opponent APIs (retries needed; often 0 at MatchStart).
+local function CaptureArenaEnemies(round)
+    if not round or type(round.enemy) ~= "table" then return end
+    if #round.enemy >= 3 then return end
+    local numOpp = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
+    if numOpp <= 0 then return end
+    local seen = {}
+    for _, ic in ipairs(round.enemy) do
+        local key = type(ic) == "table" and (ic.icon or ic.spec) or ic
+        if key then seen[key] = true end
+    end
+    for i = 1, math.min(numOpp, 3) do
+        if #round.enemy >= 3 then break end
+        local specID = nil
+        if GetArenaOpponentSpec then
+            local ok, id = pcall(GetArenaOpponentSpec, i)
+            if ok and id and not (issecretvalue and issecretvalue(id)) and type(id) == "number" and id > 0 then
+                specID = id
+            end
+        end
+        if not specID and C_PvP and C_PvP.GetArenaOpponentSpec then
+            local ok, id = pcall(C_PvP.GetArenaOpponentSpec, i)
+            if ok and id and type(id) == "number" and id > 0 then specID = id end
+        end
+        if specID and GetSpecializationInfoByID then
+            local ok, sName, _, sIcon, _, classToken = pcall(GetSpecializationInfoByID, specID)
+            if ok and sIcon and not seen[sIcon] then
+                seen[sIcon] = true
+                table.insert(round.enemy, {
+                    icon = sIcon,
+                    spec = sName,
+                    class = classToken,
+                    specId = specID,
+                })
+            end
+        end
+    end
+end
+
+local CITY_MAP_HINTS = {
+    silvermoon = true, orgrimmar = true, stormwind = true,
+    dalaran = true, valdrakken = true, ironforge = true,
+    undercity = true, thunderbluff = true, shattrath = true,
+}
+
+local function IsCityZoneName(zone)
+    if not zone or zone == "" then return false end
+    local lower = string.lower(zone)
+    for hint in pairs(CITY_MAP_HINTS) do
+        if lower:find(hint, 1, true) then return true end
+    end
+    return false
+end
+
+-- Prefer real arena/BG name over city lobby text.
+local function RefreshMatchMap(pm)
+    if not pm then return end
+    local zone = (GetRealZoneText and GetRealZoneText()) or ""
+    local instanceName = nil
+    if GetInstanceInfo then
+        local ok, name, _, _, _, _, _, instanceID = pcall(GetInstanceInfo)
+        if ok and name and name ~= "" then instanceName = name end
+    end
+    local candidate = nil
+    if instanceName and not IsCityZoneName(instanceName) then
+        candidate = instanceName
+    elseif zone ~= "" and not IsCityZoneName(zone) then
+        candidate = zone
+    end
+    if candidate and candidate ~= "" then
+        pm.map = candidate
+    end
+end
+
 local function OnMatchStart()
     ns.DebugPrint("OnMatchStart, pendingMatch =", pendingMatch)
     EnsurePVPInfo()
@@ -514,24 +589,18 @@ local function OnMatchStart()
         and (now - (pendingMatch.matchStartTime or pendingMatch.startTime or now)) < 2400
 
     if sameSession then
-        -- Update map once we land in the real arena/BG (skip overwriting with city).
-        if currentZone and currentZone ~= "" then
-            local lower = string.lower(currentZone)
-            local isCity = (lower:find("silvermoon", 1, true)
-                or lower:find("orgrimmar", 1, true)
-                or lower:find("stormwind", 1, true)
-                or lower:find("dalaran", 1, true)
-                or lower:find("valdrakken", 1, true))
-            if not isCity then
-                pendingMatch.map = currentZone
-            end
-        end
-        -- Re-detect bracket if we only knew it after zoning (e.g. Blitz).
-        if not pendingMatch.bracket or pendingMatch.bracket == "" then
-            pendingMatch.bracket = MT.DetectBracketAtStart(pendingMatch.ratingBefore)
-        elseif pendingMatch.bracket ~= "Solo Shuffle" and pendingMatch.bracket ~= "Shuffle" then
-            local again = MT.DetectBracketAtStart(pendingMatch.ratingBefore)
-            if again == "Blitz" or again == "10v10" then
+        -- Update map once we land in the real arena/BG (skip city lobby names).
+        RefreshMatchMap(pendingMatch)
+        -- Re-detect bracket after zoning. Always allow Blitz/RBG to override a
+        -- wrong Solo Shuffle label (IsRatedSoloShuffle can stick true in city).
+        local again = MT.DetectBracketAtStart(pendingMatch.ratingBefore)
+        if again then
+            if not pendingMatch.bracket or pendingMatch.bracket == "" then
+                pendingMatch.bracket = again
+            elseif again == "Blitz" or again == "10v10" then
+                pendingMatch.bracket = again
+            elseif (pendingMatch.bracket == "Solo Shuffle" or pendingMatch.bracket == "Shuffle")
+                   and again ~= "Solo Shuffle" and again ~= "Shuffle" then
                 pendingMatch.bracket = again
             end
         end
@@ -647,24 +716,21 @@ local function OnMatchStart()
 
     MatchProbe("MatchStart")
     C_Timer.After(1.0, function() CaptureBaseline(1) end)
-    -- Capture enemy arena opponent specs after gate opens
-    C_Timer.After(2, function()
-        if pendingMatch and pendingMatch.currentRound and pendingMatch.currentRound.round == rIdx then
-            local numOpp = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
-            if GetNumArenaOpponents then
-                for i = 1, math.min(numOpp, 3) do
-                    local specID = GetArenaOpponentSpec and GetArenaOpponentSpec(i)
-                    if specID and specID > 0 then
-                        local _, _, _, specIcon = GetSpecializationInfoByID(specID)
-                        if specIcon and #pendingMatch.currentRound.enemy < 3 then
-                            table.insert(pendingMatch.currentRound.enemy, specIcon)
-                        end
-                    end
-                end
-            end
-            MatchProbe("EnemySpecs", "nOpp=" .. tostring(numOpp))
+    -- Enemy specs: often 0 at MatchStart (still in city). Retry until filled.
+    local function CaptureEnemiesAttempt(attempt)
+        if not pendingMatch or not pendingMatch.currentRound then return end
+        if pendingMatch.currentRound.round ~= rIdx then return end
+        RefreshMatchMap(pendingMatch)
+        CaptureArenaEnemies(pendingMatch.currentRound)
+        local n = #pendingMatch.currentRound.enemy
+        local numOpp = (GetNumArenaOpponents and GetNumArenaOpponents()) or 0
+        MatchProbe("EnemySpecs", "nOpp=" .. tostring(numOpp) .. " filled=" .. tostring(n)
+            .. " attempt=" .. tostring(attempt or 1))
+        if n < 3 and (attempt or 1) < 8 then
+            C_Timer.After(1.5, function() CaptureEnemiesAttempt((attempt or 1) + 1) end)
         end
-    end)
+    end
+    C_Timer.After(1.0, function() CaptureEnemiesAttempt(1) end)
 
     -- Ally fill: party1/party2 + scoreboard same team (see MT.FillRoundAllies).
     -- Critical capture is at PostRound; these mid-round tries help when inspect is ready early.
@@ -696,6 +762,13 @@ local function UpdateFromScoreboard(matchEntry, record)
     local playerFullName = (playerName or "") .. "-" .. (GetRealmName() or "")
     local playerTeam = nil
     local foundPlayer = false
+    -- Arena/BG team index when scoreboard faction is still secret/empty.
+    if GetBattlefieldArenaFaction then
+        local ok, fac = pcall(GetBattlefieldArenaFaction)
+        if ok and fac ~= nil and not (issecretvalue and issecretvalue(fac)) then
+            playerTeam = tonumber(fac)
+        end
+    end
 
     local isSoloShuffle = (matchEntry.bracket == "Solo Shuffle" or matchEntry.bracket == "Shuffle")
     local enemyTotal, enemyCount = 0, 0
@@ -736,16 +809,24 @@ local function UpdateFromScoreboard(matchEntry, record)
                     end
                 end
 
-                local preMMR  = ns.SafeNumber(info.prematchMMR)
-                local postMMR = ns.SafeNumber(info.postmatchMMR)
+                local function readMMR(v)
+                    local n = ns.SafeNumber(v)
+                    if n and n > 0 then return n end
+                    if type(v) == "number" and v > 0 then return v end
+                    return nil
+                end
+                local preMMR  = readMMR(info.prematchMMR)
+                local postMMR = readMMR(info.postmatchMMR)
                 local mmrChg  = ns.SafeNumber(info.mmrChange)
+                if type(info.mmrChange) == "number" and not mmrChg then mmrChg = info.mmrChange end
                 if preMMR and preMMR > 0 then
                     matchEntry.mmrBefore = preMMR
                     matchEntry.mmrAfter  = postMMR or (preMMR + (mmrChg or 0))
                     matchEntry.mmrChange = mmrChg or (matchEntry.mmrAfter - matchEntry.mmrBefore)
-
-                    if record and record.bracketRatings and record.bracketRatings["Shuffle"] then
-                        record.bracketRatings["Shuffle"].mmr = matchEntry.mmrAfter
+                    local bKey = matchEntry.bracket
+                    if bKey == "Solo Shuffle" then bKey = "Shuffle" end
+                    if record and record.bracketRatings and bKey and record.bracketRatings[bKey] then
+                        record.bracketRatings[bKey].mmr = matchEntry.mmrAfter
                     end
                 end
 
@@ -789,6 +870,23 @@ local function UpdateFromScoreboard(matchEntry, record)
             local cToken = (ns.SafeString(info.classToken) or ""):upper()
             local sName  = ns.SafeString(info.talentSpec) or ns.SafeString(info.specName)
             local sIcon  = (sName and ns.GetSpecIcon and ns.GetSpecIcon(sName, cToken))
+            -- talentSpec is often a numeric spec ID on modern clients.
+            if not sIcon then
+                local specId = ns.SafeNumber(info.talentSpec) or ns.SafeNumber(info.specID)
+                if (not specId or specId <= 0) and type(info.talentSpec) == "number" then
+                    specId = info.talentSpec
+                end
+                if specId and specId > 0 and GetSpecializationInfoByID then
+                    local ok, sn, _, _, ic = pcall(GetSpecializationInfoByID, specId)
+                    if ok and ic then
+                        sIcon = ic
+                        sName = sName or sn
+                    end
+                end
+            end
+            if not sIcon then
+                sIcon = MT.IconFromTalentSpecOrClass and MT.IconFromTalentSpecOrClass(nil, cToken)
+            end
 
             if not sIcon or not sName then
                 local d = nil
@@ -823,20 +921,79 @@ local function UpdateFromScoreboard(matchEntry, record)
                     enemyTotal = enemyTotal + m
                     enemyCount = enemyCount + 1
                 end
-            elseif infoTeam and playerTeam and infoTeam == playerTeam then
-                table.insert(teamList, member)
             else
-                local eKey = (member.name and member.name:lower()) or (tostring(sName) .. "_" .. tostring(cToken))
-                if not enemySeen[eKey] then
-                    enemySeen[eKey] = true
-                    table.insert(enemyList, member)
-                end
-                local m = ns.SafeNumber(info.postmatchMMR) or ns.SafeNumber(info.prematchMMR)
-                if m and m > 0 then
-                    enemyTotal = enemyTotal + m
-                    enemyCount = enemyCount + 1
+                -- 2v2 / 3v3 / Blitz: group by team/faction when available.
+                local sameTeam = (infoTeam ~= nil and playerTeam ~= nil and infoTeam == playerTeam)
+                if sameTeam then
+                    table.insert(teamList, member)
+                elseif infoTeam ~= nil and playerTeam ~= nil then
+                    local eKey = (member.name and member.name:lower()) or (tostring(sName) .. "_" .. tostring(cToken))
+                    if not enemySeen[eKey] then
+                        enemySeen[eKey] = true
+                        table.insert(enemyList, member)
+                    end
+                    local m = ns.SafeNumber(info.postmatchMMR) or ns.SafeNumber(info.prematchMMR)
+                    if m and m > 0 then
+                        enemyTotal = enemyTotal + m
+                        enemyCount = enemyCount + 1
+                    end
+                else
+                    -- team/faction missing (common on 12.x): treat non-player as enemy for now;
+                    -- party fill below recovers real allies.
+                    local eKey = (member.name and member.name:lower()) or (tostring(sName) .. "_" .. tostring(cToken))
+                    if not enemySeen[eKey] then
+                        enemySeen[eKey] = true
+                        table.insert(enemyList, member)
+                    end
                 end
             end
+        end
+    end
+
+    -- Arena allies: party units when scoreboard didn't tag the same team.
+    if not isSoloShuffle and #teamList < 3 then
+        local function addUnitAlly(unit)
+            if #teamList >= 3 then return end
+            if not UnitExists or not UnitExists(unit) then return end
+            if UnitIsUnit and UnitIsUnit(unit, "player") then return end
+            local okN, name = pcall(UnitName, unit)
+            if not okN or not name then return end
+            local clean = ns.AmbiguateName(name) or name
+            for _, m in ipairs(teamList) do
+                if m.name and (m.name == clean or m.name == name) then return end
+            end
+            -- Drop from enemy list if we wrongly classified them.
+            for i = #enemyList, 1, -1 do
+                local e = enemyList[i]
+                if e.name and (e.name == clean or e.name == name) then
+                    table.remove(enemyList, i)
+                end
+            end
+            local okC, _, classToken = pcall(UnitClass, unit)
+            classToken = classToken and tostring(classToken):upper() or ""
+            local icon, specName = nil, nil
+            if GetInspectSpecialization then
+                local ok, sid = pcall(GetInspectSpecialization, unit)
+                if ok and sid and type(sid) == "number" and sid > 0 and GetSpecializationInfoByID then
+                    local ok2, sn, _, _, ic = pcall(GetSpecializationInfoByID, sid)
+                    if ok2 and ic then icon, specName = ic, sn end
+                end
+            end
+            if not icon and MT.IconFromTalentSpecOrClass then
+                icon = MT.IconFromTalentSpecOrClass(nil, classToken)
+            end
+            table.insert(teamList, {
+                name = clean,
+                spec = specName,
+                icon = icon,
+                class = classToken,
+            })
+        end
+        addUnitAlly("party1")
+        addUnitAlly("party2")
+        local n = (GetNumGroupMembers and GetNumGroupMembers()) or 0
+        for i = 1, math.min(n, 5) do
+            addUnitAlly("raid" .. i)
         end
     end
 
@@ -858,6 +1015,9 @@ end
 
 local function CheckRatingSnapshotDiff(matchEntry, pendingRatingBefore)
     local ratingAfter = CaptureRatingSnapshot()
+    -- Collect all changed brackets; prefer Blitz/RBG/arena over Shuffle so a
+    -- stuck shuffle index does not mislabel a BG.
+    local hits = {}
     for bracketIndex, before in pairs(pendingRatingBefore or {}) do
         local after = ratingAfter[bracketIndex]
         if after then
@@ -865,20 +1025,38 @@ local function CheckRatingSnapshotDiff(matchEntry, pendingRatingBefore)
                               or (after.roundsPlayed ~= before.roundsPlayed)
             local ratingChanged = (after.rating ~= before.rating)
             if playedChanged or ratingChanged then
-                matchEntry.bracket = GetBracketName(bracketIndex)
-                matchEntry.ratingBefore = before.rating
-                matchEntry.ratingAfter = after.rating
-                matchEntry.ratingChange = after.rating - before.rating
-                if after.roundsPlayed and before.roundsPlayed
-                   and after.roundsPlayed > before.roundsPlayed then
-                    matchEntry.roundsPlayed = after.roundsPlayed - before.roundsPlayed
-                    matchEntry.roundsWon = (after.roundsWon or 0) - (before.roundsWon or 0)
-                end
-                return true
+                hits[#hits + 1] = {
+                    index = bracketIndex,
+                    before = before,
+                    after = after,
+                    name = GetBracketName(bracketIndex),
+                }
             end
         end
     end
-    return false
+    if #hits == 0 then return false end
+
+    local priority = {
+        ["Blitz"] = 1, ["10v10"] = 2, ["3v3"] = 3, ["2v2"] = 4,
+        ["Solo Shuffle"] = 9, ["Shuffle"] = 9,
+    }
+    table.sort(hits, function(a, b)
+        local pa = priority[a.name or ""] or 5
+        local pb = priority[b.name or ""] or 5
+        if pa ~= pb then return pa < pb end
+        return (a.index or 0) < (b.index or 0)
+    end)
+    local best = hits[1]
+    matchEntry.bracket = best.name
+    matchEntry.ratingBefore = best.before.rating
+    matchEntry.ratingAfter = best.after.rating
+    matchEntry.ratingChange = best.after.rating - best.before.rating
+    if best.after.roundsPlayed and best.before.roundsPlayed
+       and best.after.roundsPlayed > best.before.roundsPlayed then
+        matchEntry.roundsPlayed = best.after.roundsPlayed - best.before.roundsPlayed
+        matchEntry.roundsWon = (best.after.roundsWon or 0) - (best.before.roundsWon or 0)
+    end
+    return true
 end
 
 local function OnMatchComplete()
@@ -944,6 +1122,38 @@ local function OnMatchComplete()
 
     ns.DebugPrint("snapshotDiffFound =", snapshotDiffFound, "bracket =", detectedBracket, "ratingChange =", ratingChangeVal)
 
+    -- BG map + Solo Shuffle label is almost always a mis-detect (Blitz/RBG).
+    local function MapLooksLikeBG(mapName)
+        if not mapName or mapName == "" then return false end
+        local lower = string.lower(mapName)
+        if ns.KNOWN_BG_MAPS then
+            for _, bg in ipairs(ns.KNOWN_BG_MAPS) do
+                if lower:find(string.lower(bg), 1, true) then return true end
+            end
+        end
+        -- Fallback name fragments for Blitz / RBG maps
+        local hints = {
+            "arathi", "warsong", "eye of the storm", "gilneas", "seething shore",
+            "deepwind", "silvershard", "kotmogu", "twin peaks", "alterac",
+            "isle of conquest", "wintergrasp", "ashran", "basin", "gulch",
+        }
+        for _, h in ipairs(hints) do
+            if lower:find(h, 1, true) then return true end
+        end
+        return false
+    end
+    local mapForBracket = (pendingMatch and pendingMatch.map) or ""
+    if (detectedBracket == "Solo Shuffle" or detectedBracket == "Shuffle")
+       and MapLooksLikeBG(mapForBracket) then
+        detectedBracket = "Blitz"
+        MatchProbe("BracketFix", "shuffle->Blitz map=" .. tostring(mapForBracket))
+    end
+    if pendingMatch and (pendingMatch.bracket == "Solo Shuffle" or pendingMatch.bracket == "Shuffle")
+       and MapLooksLikeBG(pendingMatch.map) then
+        pendingMatch.bracket = "Blitz"
+    end
+
+
     -- If initial diff didn't catch it yet, use pre-match rating
     if not ratingBeforeVal and pendingMatch.ratingBefore then
         for bIdx, bData in pairs(pendingMatch.ratingBefore) do
@@ -996,12 +1206,71 @@ local function OnMatchComplete()
         seasonId = GetCurrentSeasonId(),
         earlyTermination = pendingMatch.earlyTermination or false,
     }
+    -- Solo Shuffle is 6 legs; fewer usually means leaver / instance end.
+    local isSh = (matchEntry.bracket == "Solo Shuffle" or matchEntry.bracket == "Shuffle")
+    if isSh and matchEntry.rounds and #matchEntry.rounds < 6 then
+        matchEntry.earlyTermination = true
+        MatchProbe("EarlyTerm", "rounds=" .. tostring(#matchEntry.rounds) .. " expected=6")
+    end
+
 
     -- Request server scoreboard data
     if RequestBattlefieldScoreData then
         RequestBattlefieldScoreData()
     end
     UpdateFromScoreboard(matchEntry, record)
+
+    -- Arena: prefer live round comps when scoreboard split is incomplete.
+    RefreshMatchMap(pendingMatch)
+    if pendingMatch and pendingMatch.map and not IsCityZoneName(pendingMatch.map) then
+        matchEntry.map = pendingMatch.map
+    elseif matchEntry.map and IsCityZoneName(matchEntry.map) then
+        local z = (GetRealZoneText and GetRealZoneText()) or ""
+        if z ~= "" and not IsCityZoneName(z) then matchEntry.map = z end
+        if GetInstanceInfo then
+            local ok, name = pcall(GetInstanceInfo)
+            if ok and name and not IsCityZoneName(name) then matchEntry.map = name end
+        end
+    end
+
+    local lastRound = nil
+    if matchEntry.rounds and #matchEntry.rounds > 0 then
+        lastRound = matchEntry.rounds[#matchEntry.rounds]
+        if lastRound and (not lastRound.enemy or #lastRound.enemy == 0) then
+            CaptureArenaEnemies(lastRound)
+        end
+    end
+    if lastRound then
+        if (not matchEntry.team or #matchEntry.team < 2) and lastRound.team and #lastRound.team > 0 then
+            local teamOut = {}
+            for _, ic in ipairs(lastRound.team) do
+                if type(ic) == "table" then
+                    teamOut[#teamOut + 1] = ic
+                else
+                    teamOut[#teamOut + 1] = { icon = ic }
+                end
+            end
+            if #teamOut > 0 then matchEntry.team = teamOut end
+        end
+        if (not matchEntry.enemyTeam or #matchEntry.enemyTeam == 0) and lastRound.enemy and #lastRound.enemy > 0 then
+            local enemyOut = {}
+            for _, ic in ipairs(lastRound.enemy) do
+                if type(ic) == "table" then
+                    enemyOut[#enemyOut + 1] = ic
+                else
+                    enemyOut[#enemyOut + 1] = { icon = ic }
+                end
+            end
+            if #enemyOut > 0 then matchEntry.enemyTeam = enemyOut end
+        end
+    end
+    -- Last chance: live arena units still available briefly after complete.
+    if (not matchEntry.enemyTeam or #matchEntry.enemyTeam == 0) then
+        local tmp = { enemy = {} }
+        CaptureArenaEnemies(tmp)
+        if #tmp.enemy > 0 then matchEntry.enemyTeam = tmp.enemy end
+    end
+
 
     -- Scoreboard roundsWon is authoritative. GetActiveMatchWinner can mis-read
     -- myTeam on a single round; reconcile per-round flags so the tooltip matches.
@@ -1232,6 +1501,25 @@ local function OnMatchComplete()
 end
 
 function ns.InitMatchTracker()
+    -- Hard dependency: MatchOutcome.lua + MatchRounds.lua must load first (see TOC).
+    local required = {
+        "TryResolveCurrentRound", "FinalizeRound", "FillRoundAllies",
+        "SnapshotScoreboard", "IsSnapEmpty", "DetectBracketAtStart",
+    }
+    local missing = {}
+    for _, name in ipairs(required) do
+        if type(MT[name]) ~= "function" then
+            missing[#missing + 1] = name
+        end
+    end
+    if #missing > 0 then
+        local msg = "|cffff4040[AlterArena]|r Match modules incomplete — missing: "
+            .. table.concat(missing, ", ")
+            .. ". Ensure MatchOutcome.lua and MatchRounds.lua are in modules/ and listed in AlterArena.toc before MatchTracker.lua, then /reload."
+        print(msg)
+        if ns.DebugLog then ns.DebugLog(msg) end
+    end
+
     if ns.SyncExternalPvPData then
         ns.SyncExternalPvPData()
     end
@@ -1249,6 +1537,8 @@ function ns.InitMatchTracker()
     frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 
     frame:RegisterEvent("ARENA_OPPONENT_UPDATE")
+    frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+    frame:RegisterEvent("ZONE_CHANGED")
 
     -- Per-round win/loss detection for Solo Shuffle. Blizzard announces
     -- "Round N won by <name>" on the BG system channel at the end of each
@@ -1405,6 +1695,10 @@ function ns.InitMatchTracker()
             end
         elseif event == "PVP_MATCH_COMPLETE" then
             OnMatchComplete()
+        elseif event == "ZONE_CHANGED_NEW_AREA" or event == "ZONE_CHANGED" then
+            if pendingMatch then
+                RefreshMatchMap(pendingMatch)
+            end
         elseif event == "ARENA_OPPONENT_UPDATE" then
             local nowOpp = GetTime and GetTime() or time()
             if (nowOpp - lastOppProbe) >= 1.0 then
@@ -1420,6 +1714,12 @@ function ns.InitMatchTracker()
                and GetNumArenaOpponents and (GetNumArenaOpponents() or 0) > 0 then
                 MatchProbe("RecoverRound", "src=OPP_UPDATE total=" .. tostring(#(pendingMatch.rounds or {})))
                 OnMatchStart()
+            end
+            if pendingMatch then
+                RefreshMatchMap(pendingMatch)
+                if pendingMatch.currentRound then
+                    CaptureArenaEnemies(pendingMatch.currentRound)
+                end
             end
             if GetNumArenaOpponents then
                 for i = 1, GetNumArenaOpponents() do

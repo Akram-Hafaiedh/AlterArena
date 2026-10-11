@@ -41,15 +41,12 @@ end
 
 -- Detect rated queue at match start (do not default to Shuffle).
 function MT.DetectBracketAtStart(ratingBefore)
-    if C_PvP and C_PvP.IsRatedSoloShuffle and C_PvP.IsRatedSoloShuffle() then
-        return "Solo Shuffle"
-    end
-    -- Battleground Blitz (8v8 rated BG) — check before group-size arena heuristics.
+    -- Blitz / RBG MUST be before Solo Shuffle: IsRatedSoloShuffle can be true
+    -- while still in a city or after a previous shuffle session.
     if C_PvP and C_PvP.IsBlitz and C_PvP.IsBlitz() then
         return "Blitz"
     end
     if C_PvP and C_PvP.IsRatedBattleground and C_PvP.IsRatedBattleground() then
-        -- Classic 10v10 RBG vs Blitz: prefer Blitz name if rating lives on 8/9.
         if ratingBefore then
             local b8 = ratingBefore[8]
             local b9 = ratingBefore[9]
@@ -58,6 +55,9 @@ function MT.DetectBracketAtStart(ratingBefore)
             end
         end
         return "10v10"
+    end
+    if C_PvP and C_PvP.IsRatedSoloShuffle and C_PvP.IsRatedSoloShuffle() then
+        return "Solo Shuffle"
     end
     -- Arena: group size is the most reliable 2v2 vs 3v3 signal.
     local members = GetNumGroupMembers and GetNumGroupMembers() or 0
@@ -179,25 +179,37 @@ function MT.FillRoundAllies(round)
 
     -- 3) Scoreboard: same team index as the player (faction = Gold/Purple team)
     if #round.team < 3 and C_PvP and C_PvP.GetScoreInfo and GetNumBattlefieldScores then
-        local myTeam = GetMyShuffleTeamIndex()
+        local myTeam = nil
+        if type(MT.GetMyShuffleTeamIndex) == "function" then
+            local ok, t = pcall(MT.GetMyShuffleTeamIndex)
+            if ok then myTeam = t end
+        elseif GetBattlefieldArenaFaction then
+            local ok, fac = pcall(GetBattlefieldArenaFaction)
+            if ok and fac ~= nil and not (issecretvalue and issecretvalue(fac)) then
+                myTeam = tonumber(fac)
+            end
+        end
         local playerName = UnitName("player")
         local n = GetNumBattlefieldScores() or 0
         for i = 1, n do
             if #round.team >= 3 then break end
             local info = C_PvP.GetScoreInfo(i)
             if info and myTeam ~= nil then
-                local name = ns.SafeString(info.name)
+                local name = (ns.SafeString and ns.SafeString(info.name)) or nil
                 if name and playerName then
-                    local clean = ns.AmbiguateName(name) or name
+                    local clean = (ns.AmbiguateName and ns.AmbiguateName(name)) or name
                     local isMe = (clean == playerName or name == playerName
-                        or name:find(playerName, 1, true))
+                        or (type(name) == "string" and name:find(playerName, 1, true)))
                     if not isMe then
-                        local team = ns.SafeNumber(info.faction)
+                        local team = ns.SafeNumber and ns.SafeNumber(info.faction)
                         if team == myTeam then
-                            local classToken = ns.SafeString(info.classToken)
-                            local talentSpec = ns.SafeNumber(info.talentSpec)
-                                or ns.SafeNumber(info.specID)
-                            addIcon(MT.IconFromTalentSpecOrClass(talentSpec, classToken))
+                            local classToken = ns.SafeString and ns.SafeString(info.classToken)
+                            local talentSpec = ns.SafeNumber and (ns.SafeNumber(info.talentSpec)
+                                or ns.SafeNumber(info.specID))
+                            local iconFn = MT.IconFromTalentSpecOrClass
+                            if type(iconFn) == "function" then
+                                addIcon(iconFn(talentSpec, classToken))
+                            end
                         end
                     end
                 end
@@ -205,7 +217,7 @@ function MT.FillRoundAllies(round)
         end
     end
 
-    MT.MatchProbe("TeamSpecs", string.format("n=%d filled", #round.team))
+    if MT.MatchProbe then MT.MatchProbe("TeamSpecs", string.format("n=%d filled", #round.team)) end
 end
 
 -- Chat last-resort only (primary W/L is GetActiveMatchWinner).

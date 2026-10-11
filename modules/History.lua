@@ -374,9 +374,9 @@ function ns.RenderHistoryView(frame)
         { title = "Date", width = 68, gap = 4 },
         { title = "Outcome", width = 58, align = "CENTER", gap = 4 },
         { title = "Bracket", width = 78, gap = 4 },
-        { title = "Team", width = 45, align = "CENTER", gap = 4 },
-        { title = "Enemy Team", width = 115, align = "CENTER", gap = 4 },
-        { title = "Rating & Delta", width = 115, gap = 4 },
+        { title = "Team", width = 62, align = "CENTER", gap = 4 },
+        { title = "Enemy Team", width = 100, align = "CENTER", gap = 4 },
+        { title = "Rating & Delta", width = 100, gap = 4 },
         { title = "MMR", width = 50, align = "CENTER", gap = 4 },
         { title = "Enemy MMR", width = 70, align = "CENTER", gap = 4 },
         { title = "Map", width = 115, gap = 4 },
@@ -582,7 +582,7 @@ function ns.RenderHistoryView(frame)
                     GameTooltip:AddDoubleLine(string.format("|cffffd100%s|r", bName), outcomeStr, 1, 1, 1, 1, 1, 1)
                 end
 
-                -- Round-by-round breakdown for Solo Shuffle
+                -- Unified layout: "N: team vs enemy" + duration (Shuffle multi-round; arena often 1).
                 if match.rounds and #match.rounds > 0 then
                     GameTooltip:AddLine(" ")
                     for rNum, rData in ipairs(match.rounds) do
@@ -595,9 +595,14 @@ function ns.RenderHistoryView(frame)
                                 end
                             end
                         end
+                        -- If this leg has no enemy icons, fall back to match.enemyTeam (arena).
+                        local enemySource = rData.enemy
+                        if (not enemySource or #enemySource == 0) and match.enemyTeam and #match.enemyTeam > 0 then
+                            enemySource = match.enemyTeam
+                        end
                         local enemyIcons = ""
-                        if rData.enemy then
-                            for _, ic in ipairs(rData.enemy) do
+                        if enemySource then
+                            for _, ic in ipairs(enemySource) do
                                 local icon = type(ic) == "table" and (ic.icon or (ic.spec and ns.GetSpecIcon and ns.GetSpecIcon(ic.spec, ic.class))) or ic
                                 if icon then
                                     enemyIcons = enemyIcons .. string.format("|T%s:16:16:0:0|t ", icon)
@@ -637,24 +642,28 @@ function ns.RenderHistoryView(frame)
                         end
                     end
                 elseif match.enemyTeam and #match.enemyTeam > 0 then
+                    -- No rounds table — same visual style, single line.
                     GameTooltip:AddLine(" ")
-                    local teamStr = ""
+                    local teamIcons = ""
                     if match.team then
                         for _, member in ipairs(match.team) do
                             local ic = member.icon or match.specIcon
-                            if ic then teamStr = teamStr .. string.format("|T%s:14:14:0:0|t ", ic) end
+                            if ic then teamIcons = teamIcons .. string.format("|T%s:16:16:0:0|t ", ic) end
                         end
                     elseif match.specIcon then
-                        teamStr = string.format("|T%s:14:14:0:0|t", match.specIcon)
+                        teamIcons = string.format("|T%s:16:16:0:0|t ", match.specIcon)
                     end
-                    GameTooltip:AddDoubleLine("|cff888899Your Team:|r", teamStr)
-
-                    local enemyStr = ""
+                    local enemyIcons = ""
                     for _, member in ipairs(match.enemyTeam) do
                         local ic = member.icon or (member.spec and ns.GetSpecIcon and ns.GetSpecIcon(member.spec, member.class))
-                        if ic then enemyStr = enemyStr .. string.format("|T%s:14:14:0:0|t ", ic) end
+                        if ic then enemyIcons = enemyIcons .. string.format("|T%s:16:16:0:0|t ", ic) end
                     end
-                    GameTooltip:AddDoubleLine("|cff888899Enemy Team:|r", enemyStr)
+                    local dColor = (match.won == true and "22c55e") or (match.won == false and "ef4444") or "ffd100"
+                    local durText = (match.duration and match.duration > 0 and ns.FormatRoundDuration and ns.FormatRoundDuration(match.duration)) or "—"
+                    GameTooltip:AddDoubleLine(
+                        string.format("|cff22c55e1:|r %s|cffffd100vs|r %s", teamIcons, enemyIcons),
+                        string.format("|cff%s%s|r", dColor, durText)
+                    )
                 elseif match.roundsWon ~= nil then
                     local rLost = (match.roundsPlayed or 6) - match.roundsWon
                     local scColor = match.roundsWon >= 4 and "22c55e" or (match.roundsWon == 3 and "ffd100" or "ef4444")
@@ -737,17 +746,17 @@ function ns.RenderHistoryView(frame)
 
             row.teamText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             row.teamText:SetPoint("LEFT", row.bracketText, "RIGHT", 4, 0)
-            row.teamText:SetWidth(45)
+            row.teamText:SetWidth(62)
             row.teamText:SetJustifyH("CENTER")
 
             row.enemyTeamText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             row.enemyTeamText:SetPoint("LEFT", row.teamText, "RIGHT", 4, 0)
-            row.enemyTeamText:SetWidth(115)
+            row.enemyTeamText:SetWidth(100)
             row.enemyTeamText:SetJustifyH("CENTER")
 
             row.ratingText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             row.ratingText:SetPoint("LEFT", row.enemyTeamText, "RIGHT", 4, 0)
-            row.ratingText:SetWidth(115)
+            row.ratingText:SetWidth(100)
             row.ratingText:SetJustifyH("LEFT")
 
             row.mmrText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -822,13 +831,31 @@ function ns.RenderHistoryView(frame)
         local bracketName = ns.GetMatchBracket(m)
         row.bracketText:SetText("|cffffffff" .. bracketName .. "|r")
 
-        -- Team spec icon(s)
+        -- Team / enemy icons (scoreboard first, else last recorded round)
+        local function iconFrom(entry, fallback)
+            if not entry then return fallback end
+            if type(entry) == "table" then
+                return entry.icon
+                    or (entry.spec and ns.GetSpecIcon and ns.GetSpecIcon(entry.spec, entry.class))
+                    or fallback
+            end
+            return entry or fallback
+        end
+        local teamList, enemyList = m.team, m.enemyTeam
+        local rd = (m.rounds and m.rounds[#m.rounds]) or nil
+        if (not teamList or #teamList == 0) and rd and rd.team and #rd.team > 0 then
+            teamList = rd.team
+        end
+        if (not enemyList or #enemyList == 0) and rd and rd.enemy and #rd.enemy > 0 then
+            enemyList = rd.enemy
+        end
+
         local teamDisplay = ""
-        if m.team and #m.team > 0 then
-            for _, member in ipairs(m.team) do
-                local ic = member.icon or m.specIcon
+        if teamList and #teamList > 0 then
+            for _, member in ipairs(teamList) do
+                local ic = iconFrom(member, m.specIcon)
                 if ic then
-                    teamDisplay = teamDisplay .. string.format("|T%s:17:17:0:0|t ", ic)
+                    teamDisplay = teamDisplay .. string.format("|T%s:15:15:0:0|t ", ic)
                 end
             end
         elseif m.specIcon then
@@ -838,11 +865,10 @@ function ns.RenderHistoryView(frame)
         end
         row.teamText:SetText(teamDisplay)
 
-        -- Enemy Team spec icon(s)
         local enemyDisplay = ""
-        if m.enemyTeam and #m.enemyTeam > 0 then
-            for _, member in ipairs(m.enemyTeam) do
-                local ic = member.icon or (member.spec and ns.GetSpecIcon and ns.GetSpecIcon(member.spec, member.class))
+        if enemyList and #enemyList > 0 then
+            for _, member in ipairs(enemyList) do
+                local ic = iconFrom(member, nil)
                 if ic then
                     enemyDisplay = enemyDisplay .. string.format("|T%s:16:16:0:0|t ", ic)
                 end
@@ -860,24 +886,27 @@ function ns.RenderHistoryView(frame)
         end
 
         local rText = "---"
+        -- Always show delta, including (+0). Compact so the column does not clip.
+        if chg == nil then chg = 0 end
         if rVal and rVal > 0 then
-            if chg and chg > 0 then
-                rText = string.format("%d |cff22c55e(+%d)|r", rVal, chg)
-            elseif chg and chg < 0 then
-                rText = string.format("%d |cffef4444(%d)|r", rVal, chg)
+            if chg > 0 then
+                rText = string.format("%d|cff22c55e(+%d)|r", rVal, chg)
+            elseif chg < 0 then
+                rText = string.format("%d|cffef4444(%d)|r", rVal, chg)
             else
-                rText = tostring(rVal)
+                rText = string.format("%d|cff888899(+0)|r", rVal)
             end
-        elseif chg and chg ~= 0 then
+        elseif chg ~= 0 then
             if chg > 0 then
                 rText = string.format("|cff22c55e(+%d)|r", chg)
             else
                 rText = string.format("|cffef4444(%d)|r", chg)
             end
         elseif m.ratingBefore then
-            rText = tostring(m.ratingBefore)
+            rText = string.format("%d|cff888899(+0)|r", m.ratingBefore)
         end
         row.ratingText:SetText(rText)
+        row.ratingText:SetWordWrap(false)
 
         -- MMR
         local mmrVal = m.mmrAfter or m.mmr or m.mmrBefore

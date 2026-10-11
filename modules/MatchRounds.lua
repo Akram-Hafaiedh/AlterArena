@@ -250,14 +250,15 @@ function MT.FinalizeRound(round, reason)
         or zl:find("dalaran", 1, true)
         or zl:find("valdrakken", 1, true)
 
+    -- Staging = city/hub lobby only. Never drop an arena/BG leg for missing
+    -- enemy icons (that was deleting real rounds and leaving 5/6).
     if nEnemy == 0 and reason ~= "match_end" and not round._chatWinner then
-        if isCity or elapsed < 45 then
+        if isCity then
             round._finalized = true
             ns.DebugPrint("Discarding staging round (no enemies)", round.round, zone, elapsed)
             MT.MatchProbe("FinalizeRound", "discard=staging total=" .. tostring(#(MT.pendingMatch and MT.pendingMatch.rounds or {})))
             return false
         end
-        -- Arena map, long duration, no enemy icons: still a real round.
         MT.MatchProbe("FinalizeRound", "keepEmptyEnemy elapsed=" .. tostring(elapsed) .. " map=" .. tostring(zone))
     end
 

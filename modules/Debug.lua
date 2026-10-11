@@ -152,13 +152,29 @@ function ns.SaveMatchDebugDump(text, meta)
     return entry.id
 end
 
+local function BracketMatchesFilter(entryBracket, filterBracket)
+    if not filterBracket or filterBracket == "" or filterBracket == "All" then
+        return true
+    end
+    local b = entryBracket or "Unknown"
+    if b == filterBracket then return true end
+    -- Aliases: UI uses "Shuffle", storage may be "Solo Shuffle"
+    if filterBracket == "Shuffle" or filterBracket == "Solo Shuffle" then
+        return b == "Shuffle" or b == "Solo Shuffle"
+    end
+    if filterBracket == "Unknown" then
+        return b == "Unknown" or b == "" or b == nil
+    end
+    return false
+end
+
 function ns.ListMatchDebugDumps(filterBracket)
     local arch = EnsureDebugArchive()
     if not arch or not arch.entries then return {} end
     local out = {}
     for i = #arch.entries, 1, -1 do
         local e = arch.entries[i]
-        if not filterBracket or e.bracket == filterBracket then
+        if BracketMatchesFilter(e.bracket, filterBracket) then
             out[#out + 1] = {
                 id = e.id,
                 date = e.date,
@@ -932,8 +948,18 @@ local function EnsureDebugFrame()
             ns._archivePicker = nil
         end
 
+        local C = (ns.UI and ns.UI.colors) or {
+            bg = { 0.06, 0.07, 0.09, 0.97 },
+            bgRaised = { 0.10, 0.11, 0.14, 1 },
+            bgHover = { 0.14, 0.16, 0.20, 1 },
+            border = { 0.22, 0.24, 0.28, 1 },
+            accent = { 0.25, 0.75, 1.0, 1 },
+            textMuted = { 0.55, 0.58, 0.62, 1 },
+        }
+        local function unpackC(c) return c[1], c[2], c[3], c[4] or 1 end
+
         local picker = CreateFrame("Frame", "AlterArenaDumpArchivePicker", f, "BackdropTemplate")
-        picker:SetSize(420, 360)
+        picker:SetSize(480, 400)
         picker:SetPoint("CENTER", UIParent, "CENTER")
         picker:SetFrameStrata("FULLSCREEN_DIALOG")
         picker:SetBackdrop({
@@ -942,62 +968,139 @@ local function EnsureDebugFrame()
             edgeSize = 1,
             insets = { left = 1, right = 1, top = 1, bottom = 1 },
         })
-        picker:SetBackdropColor(0.06, 0.07, 0.10, 0.98)
-        picker:SetBackdropBorderColor(0.25, 0.75, 1.0, 0.7)
+        picker:SetBackdropColor(unpackC(C.bg))
+        picker:SetBackdropBorderColor(unpackC(C.border))
         picker:EnableMouse(true)
         picker:SetMovable(true)
         picker:RegisterForDrag("LeftButton")
         picker:SetScript("OnDragStart", picker.StartMoving)
         picker:SetScript("OnDragStop", picker.StopMovingOrSizing)
 
-        local title = picker:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        title:SetPoint("TOPLEFT", 12, -10)
-        title:SetText("|cff40c0ffSaved dumps|r  (by queue)")
+        local title = picker:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        title:SetPoint("TOPLEFT", 14, -12)
+        title:SetText("|cff40c0ffSaved dumps|r")
+        local subtitle = picker:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        subtitle:SetPoint("LEFT", title, "RIGHT", 8, 0)
+        subtitle:SetText("|cff888899by queue — click a row to copy|r")
 
-        local closeX = CreateFrame("Button", nil, picker, "UIPanelCloseButton")
-        closeX:SetPoint("TOPRIGHT", 2, 2)
+        local closeX = CreateFrame("Button", nil, picker, "BackdropTemplate")
+        closeX:SetSize(24, 24)
+        closeX:SetPoint("TOPRIGHT", -8, -8)
+        closeX:SetBackdrop({
+            bgFile = "Interface/Buttons/WHITE8X8",
+            edgeFile = "Interface/Buttons/WHITE8X8",
+            edgeSize = 1,
+        })
+        closeX:SetBackdropColor(0.12, 0.13, 0.16, 1)
+        closeX:SetBackdropBorderColor(0.22, 0.23, 0.28, 1)
+        local closeFs = closeX:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        closeFs:SetPoint("CENTER")
+        closeFs:SetText("|cffaaaaaa×|r")
+        closeX:SetScript("OnEnter", function(self)
+            self:SetBackdropColor(0.25, 0.75, 1, 0.25)
+            self:SetBackdropBorderColor(0.25, 0.75, 1, 0.8)
+        end)
+        closeX:SetScript("OnLeave", function(self)
+            self:SetBackdropColor(0.12, 0.13, 0.16, 1)
+            self:SetBackdropBorderColor(0.22, 0.23, 0.28, 1)
+        end)
         closeX:SetScript("OnClick", function()
             picker:Hide()
             if ns._archivePicker == picker then ns._archivePicker = nil end
         end)
 
+        -- Filter chips (themed, not default yellow UIPanel buttons)
+        local filterBar = CreateFrame("Frame", nil, picker, "BackdropTemplate")
+        filterBar:SetPoint("TOPLEFT", 12, -40)
+        filterBar:SetPoint("TOPRIGHT", -12, -40)
+        filterBar:SetHeight(28)
+        filterBar:SetBackdrop({
+            bgFile = "Interface/Buttons/WHITE8X8",
+            edgeFile = "Interface/Buttons/WHITE8X8",
+            edgeSize = 1,
+        })
+        filterBar:SetBackdropColor(0.04, 0.05, 0.07, 0.9)
+        filterBar:SetBackdropBorderColor(0.18, 0.20, 0.24, 0.9)
+
         local scroll = CreateFrame("ScrollFrame", nil, picker, "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 10, -32)
-        scroll:SetPoint("BOTTOMRIGHT", -30, 44)
+        scroll:SetPoint("TOPLEFT", 12, -74)
+        scroll:SetPoint("BOTTOMRIGHT", -28, 14)
         local child = CreateFrame("Frame", nil, scroll)
-        child:SetSize(370, 10)
+        child:SetSize(430, 10)
         scroll:SetScrollChild(child)
 
-        local filters = { "All", "Solo Shuffle", "3v3", "2v2", "Blitz", "10v10", "Arena", "Unknown" }
-        local y = 0
+        local emptyLabel = picker:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        emptyLabel:SetPoint("CENTER", scroll, "CENTER")
+        emptyLabel:SetText("|cff666666No dumps for this filter|r")
+        emptyLabel:Hide()
+
+        local filters = { "All", "Shuffle", "3v3", "2v2", "Blitz", "10v10", "Arena", "Unknown" }
+        local activeFilter = "All"
+        local filterBtns = {}
+
+        local function styleFilterBtn(btn, active)
+            if active then
+                btn:SetBackdropColor(0.12, 0.45, 0.65, 0.9)
+                btn:SetBackdropBorderColor(0.25, 0.75, 1.0, 1)
+                if btn.label then btn.label:SetTextColor(0.95, 0.97, 1.0) end
+            else
+                btn:SetBackdropColor(0.10, 0.11, 0.14, 0.95)
+                btn:SetBackdropBorderColor(0.22, 0.24, 0.28, 0.9)
+                if btn.label then btn.label:SetTextColor(0.70, 0.72, 0.76) end
+            end
+        end
+
         local function rebuild(filter)
+            activeFilter = filter or "All"
+            for name, btn in pairs(filterBtns) do
+                styleFilterBtn(btn, name == activeFilter)
+            end
             for _, r in ipairs(child.rows or {}) do r:Hide() end
             child.rows = {}
-            y = 0
-            local rows = ns.ListMatchDebugDumps(filter == "All" and nil or filter)
+            local y = 0
+            -- IMPORTANT: do not use `x and nil or y` (Lua treats nil as false → returns y)
+            local filterArg = (activeFilter ~= "All") and activeFilter or nil
+            local rows = ns.ListMatchDebugDumps(filterArg)
+            if #rows == 0 then
+                emptyLabel:Show()
+                child:SetHeight(40)
+                return
+            end
+            emptyLabel:Hide()
             for _, e in ipairs(rows) do
                 local btn = CreateFrame("Button", nil, child, "BackdropTemplate")
-                btn:SetSize(360, 28)
+                btn:SetSize(420, 30)
                 btn:SetPoint("TOPLEFT", 0, -y)
                 btn:SetBackdrop({
                     bgFile = "Interface/Buttons/WHITE8X8",
                     edgeFile = "Interface/Buttons/WHITE8X8",
                     edgeSize = 1,
                 })
-                btn:SetBackdropColor(0.12, 0.14, 0.18, 0.9)
-                btn:SetBackdropBorderColor(0.2, 0.25, 0.3, 0.6)
+                btn:SetBackdropColor(0.10, 0.11, 0.14, 0.95)
+                btn:SetBackdropBorderColor(0.18, 0.20, 0.24, 0.8)
                 local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-                fs:SetPoint("LEFT", 6, 0)
+                fs:SetPoint("LEFT", 8, 0)
+                fs:SetPoint("RIGHT", -8, 0)
                 fs:SetJustifyH("LEFT")
+                fs:SetWordWrap(false)
+                local outcome = e.won == true and "|cff40ff40W|r"
+                    or (e.won == false and "|cffff4040L|r" or "|cff888888—|r")
                 fs:SetText(string.format(
-                    "#%d  |cff88ccff%s|r  %s  %s  r=%s  %s",
+                    "|cff666666#%d|r  |cff40c0ff%s|r  |cffffffff%s|r  |cff888899%s|r  %s",
                     e.id or 0,
                     tostring(e.bracket or "?"),
-                    tostring(e.map or "?"),
+                    tostring(e.map or "—"),
                     e.date or "",
-                    tostring(e.rounds or "-"),
-                    e.won == true and "|cff40ff40W|r" or (e.won == false and "|cffff4040L|r" or "—")
+                    outcome
                 ))
+                btn:SetScript("OnEnter", function(self)
+                    self:SetBackdropColor(0.14, 0.16, 0.20, 1)
+                    self:SetBackdropBorderColor(0.25, 0.75, 1.0, 0.7)
+                end)
+                btn:SetScript("OnLeave", function(self)
+                    self:SetBackdropColor(0.10, 0.11, 0.14, 0.95)
+                    self:SetBackdropBorderColor(0.18, 0.20, 0.24, 0.8)
+                end)
                 btn:SetScript("OnClick", function()
                     local text = ns.GetMatchDebugDumpById and ns.GetMatchDebugDumpById(e.id)
                     if text and ns.ShowDebugCopyPanel then
@@ -1008,23 +1111,36 @@ local function EnsureDebugFrame()
                     end
                 end)
                 child.rows[#child.rows + 1] = btn
-                y = y + 30
+                y = y + 32
             end
             child:SetHeight(math.max(y, 40))
         end
 
-        local fx = 10
+        local fx = 6
         for _, name in ipairs(filters) do
-            local fb = CreateFrame("Button", nil, picker, "UIPanelButtonTemplate")
-            fb:SetSize(52, 20)
-            fb:SetPoint("BOTTOMLEFT", fx, 12)
-            fb:SetText(name == "Solo Shuffle" and "Shuffle" or name)
+            local fb = CreateFrame("Button", nil, filterBar, "BackdropTemplate")
+            local w = (name == "Unknown" and 58) or (name == "Shuffle" and 54) or 44
+            if name == "10v10" then w = 48 end
+            fb:SetSize(w, 20)
+            fb:SetPoint("LEFT", fx, 0)
+            fb:SetBackdrop({
+                bgFile = "Interface/Buttons/WHITE8X8",
+                edgeFile = "Interface/Buttons/WHITE8X8",
+                edgeSize = 1,
+            })
+            local lbl = fb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            lbl:SetPoint("CENTER")
+            lbl:SetText(name)
+            fb.label = lbl
+            styleFilterBtn(fb, name == "All")
             fb:SetScript("OnClick", function() rebuild(name) end)
-            fx = fx + 54
+            filterBtns[name] = fb
+            fx = fx + w + 4
         end
         rebuild("All")
         ns._archivePicker = picker
         picker:Show()
+
     end)
     f.btnArchiveMatch = archiveBtn
 
